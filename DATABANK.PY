@@ -5,9 +5,43 @@ from pathlib import Path
 from typing import Optional
 
 
-DATA_FILE = Path(__file__).with_name("vault_data.json")
-CONFIG_FILE = Path(__file__).with_name("vault_config.json")
 DEFAULT_CREDENTIALS = {"username": "guest", "password": "11"}
+
+
+def resolve_storage_dir() -> Path:
+	home_storage_dir = (Path.home() / ".data_bank").resolve()
+
+	try:
+		home_storage_dir.mkdir(parents=True, exist_ok=True)
+		probe_file = home_storage_dir / ".data_bank_write_test"
+		probe_file.write_text("ok", encoding="utf-8")
+		probe_file.unlink(missing_ok=True)
+		return home_storage_dir
+	except OSError:
+		pass
+
+	fallback_dirs: list[Path] = [Path.cwd().resolve()]
+
+	main_file = globals().get("__file__")
+	if isinstance(main_file, str):
+		fallback_dirs.append(Path(main_file).resolve().parent)
+
+	for directory in fallback_dirs:
+		try:
+			directory.mkdir(parents=True, exist_ok=True)
+			probe_file = directory / ".data_bank_write_test"
+			probe_file.write_text("ok", encoding="utf-8")
+			probe_file.unlink(missing_ok=True)
+			return directory
+		except OSError:
+			pass
+
+	return Path.cwd().resolve()
+
+
+STORAGE_DIR = resolve_storage_dir()
+DATA_FILE = STORAGE_DIR / "vault_data.json"
+CONFIG_FILE = STORAGE_DIR / "vault_config.json"
 
 
 def prompt(message: str) -> Optional[str]:
@@ -38,9 +72,14 @@ def load_credentials() -> dict[str, str]:
 	return DEFAULT_CREDENTIALS.copy()
 
 
-def save_credentials(credentials: dict[str, str]) -> None:
-	with CONFIG_FILE.open("w", encoding="utf-8") as file:
-		json.dump(credentials, file, indent=2)
+def save_credentials(credentials: dict[str, str]) -> bool:
+	try:
+		with CONFIG_FILE.open("w", encoding="utf-8") as file:
+			json.dump(credentials, file, indent=2)
+		return True
+	except OSError as error:
+		print(f"Could not save credentials: {error}")
+		return False
 
 
 def load_vault() -> dict[str, str]:
@@ -57,9 +96,14 @@ def load_vault() -> dict[str, str]:
 	return {}
 
 
-def save_vault(vault: dict[str, str]) -> None:
-	with DATA_FILE.open("w", encoding="utf-8") as file:
-		json.dump(vault, file, indent=2)
+def save_vault(vault: dict[str, str]) -> bool:
+	try:
+		with DATA_FILE.open("w", encoding="utf-8") as file:
+			json.dump(vault, file, indent=2)
+		return True
+	except OSError as error:
+		print(f"Could not save vault data: {error}")
+		return False
 
 
 def login(credentials: dict[str, str]) -> bool:
@@ -108,8 +152,10 @@ def add_data(vault: dict[str, str]) -> None:
 		return
 
 	vault[key] = value
-	save_vault(vault)
-	print(f"Saved data for key '{key}'.")
+	if save_vault(vault):
+		print(f"Saved data for key '{key}'.")
+	else:
+		print("Data could not be saved.")
 
 
 def list_data(vault: dict[str, str]) -> None:
@@ -137,9 +183,13 @@ def delete_data(vault: dict[str, str]) -> None:
 	if key is None:
 		return
 	if key in vault:
+		original_value = vault[key]
 		del vault[key]
-		save_vault(vault)
-		print(f"Deleted key '{key}'.")
+		if save_vault(vault):
+			print(f"Deleted key '{key}'.")
+		else:
+			vault[key] = original_value
+			print("Delete failed because data could not be saved.")
 	else:
 		print("No data found for that key.")
 
@@ -166,8 +216,10 @@ def change_credentials(credentials: dict[str, str]) -> None:
 
 	credentials["username"] = new_username
 	credentials["password"] = new_password
-	save_credentials(credentials)
-	print("Credentials updated and saved.")
+	if save_credentials(credentials):
+		print("Credentials updated and saved.")
+	else:
+		print("Credentials were not saved.")
 
 
 def main() -> None:
