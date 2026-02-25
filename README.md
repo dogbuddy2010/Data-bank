@@ -23,4 +23,6 @@ Default login:
 - Username: `guest`
 - Password: `11`
 
-After first run, login credentials are saved in `vault_config.json` and can be changed in-app.
+The default login works only when `vault_config.json` does not yet exist or has been reset to defaults.
+
+After first run, login credentials are saved in `vault_config.json` and can be changed in-app. If you changed them, use the new values from that file.

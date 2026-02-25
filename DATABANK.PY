@@ -1,10 +1,21 @@
+from __future__ import annotations
+
 import json
 from pathlib import Path
+from typing import Optional
 
 
 DATA_FILE = Path(__file__).with_name("vault_data.json")
 CONFIG_FILE = Path(__file__).with_name("vault_config.json")
 DEFAULT_CREDENTIALS = {"username": "guest", "password": "11"}
+
+
+def prompt(message: str) -> Optional[str]:
+	try:
+		return input(message).strip()
+	except (EOFError, KeyboardInterrupt):
+		print("\nInput cancelled.")
+		return None
 
 
 def load_credentials() -> dict[str, str]:
@@ -54,8 +65,12 @@ def save_vault(vault: dict[str, str]) -> None:
 def login(credentials: dict[str, str]) -> bool:
 	print("=== DATA BANK ===")
 	print("Please log in to continue.")
-	entered_username = input("Username: ").strip()
-	entered_password = input("Password: ").strip()
+	entered_username = prompt("Username: ")
+	if entered_username is None:
+		return False
+	entered_password = prompt("Password: ")
+	if entered_password is None:
+		return False
 
 	is_logged_in = (
 		entered_username == credentials["username"]
@@ -81,8 +96,12 @@ def show_menu() -> None:
 
 
 def add_data(vault: dict[str, str]) -> None:
-	key = input("Enter key: ").strip()
-	value = input("Enter value: ").strip()
+	key = prompt("Enter key: ")
+	if key is None:
+		return
+	value = prompt("Enter value: ")
+	if value is None:
+		return
 
 	if not key:
 		print("Key cannot be empty.")
@@ -104,7 +123,9 @@ def list_data(vault: dict[str, str]) -> None:
 
 
 def retrieve_data(vault: dict[str, str]) -> None:
-	key = input("Enter key to retrieve: ").strip()
+	key = prompt("Enter key to retrieve: ")
+	if key is None:
+		return
 	if key in vault:
 		print(f"Value: {vault[key]}")
 	else:
@@ -112,7 +133,9 @@ def retrieve_data(vault: dict[str, str]) -> None:
 
 
 def delete_data(vault: dict[str, str]) -> None:
-	key = input("Enter key to delete: ").strip()
+	key = prompt("Enter key to delete: ")
+	if key is None:
+		return
 	if key in vault:
 		del vault[key]
 		save_vault(vault)
@@ -123,13 +146,19 @@ def delete_data(vault: dict[str, str]) -> None:
 
 def change_credentials(credentials: dict[str, str]) -> None:
 	print("\nChange credentials")
-	current_password = input("Enter current password: ").strip()
+	current_password = prompt("Enter current password: ")
+	if current_password is None:
+		return
 	if current_password != credentials["password"]:
 		print("Current password is incorrect.")
 		return
 
-	new_username = input("New username: ").strip()
-	new_password = input("New password: ").strip()
+	new_username = prompt("New username: ")
+	if new_username is None:
+		return
+	new_password = prompt("New password: ")
+	if new_password is None:
+		return
 
 	if not new_username or not new_password:
 		print("Username and password cannot be empty.")
@@ -151,7 +180,10 @@ def main() -> None:
 
 	while True:
 		show_menu()
-		choice = input("Enter your choice (1-6): ").strip()
+		choice = prompt("Enter your choice (1-6): ")
+		if choice is None:
+			print("Goodbye.")
+			break
 
 		if choice == "1":
 			add_data(vault)
