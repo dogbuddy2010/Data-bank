@@ -151,6 +151,10 @@ def add_data(vault: dict[str, str]) -> None:
 		print("Key cannot be empty.")
 		return
 
+	if not value:
+		print("Value cannot be empty.")
+		return
+
 	vault[key] = value
 	if save_vault(vault):
 		print(f"Saved data for key '{key}'.")
