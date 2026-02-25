@@ -223,6 +223,7 @@ def change_credentials(credentials: dict[str, str]) -> None:
 
 
 def main() -> None:
+	print(f"Storage folder: {STORAGE_DIR}")
 	credentials = load_credentials()
 	if not login(credentials):
 		return
