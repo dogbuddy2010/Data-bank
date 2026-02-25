@@ -1,0 +1,7 @@
+# Python cache
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Local data files (created at runtime, may contain personal data)
+vault_data.json
