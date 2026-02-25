@@ -19,6 +19,13 @@ From the project folder:
 python3 DATABANK.PY
 ```
 
+## Quick Health Check
+To verify storage path and file write access:
+
+```bash
+python3 health_check.py
+```
+
 Default login:
 - Username: `guest`
 - Password: `11`

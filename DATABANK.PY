@@ -8,17 +8,22 @@ from typing import Optional
 DEFAULT_CREDENTIALS = {"username": "guest", "password": "11"}
 
 
+def is_writable_directory(directory: Path) -> bool:
+	try:
+		directory.mkdir(parents=True, exist_ok=True)
+		probe_file = directory / ".data_bank_write_test"
+		probe_file.write_text("ok", encoding="utf-8")
+		probe_file.unlink(missing_ok=True)
+		return True
+	except OSError:
+		return False
+
+
 def resolve_storage_dir() -> Path:
 	home_storage_dir = (Path.home() / ".data_bank").resolve()
 
-	try:
-		home_storage_dir.mkdir(parents=True, exist_ok=True)
-		probe_file = home_storage_dir / ".data_bank_write_test"
-		probe_file.write_text("ok", encoding="utf-8")
-		probe_file.unlink(missing_ok=True)
+	if is_writable_directory(home_storage_dir):
 		return home_storage_dir
-	except OSError:
-		pass
 
 	fallback_dirs: list[Path] = [Path.cwd().resolve()]
 
@@ -27,14 +32,8 @@ def resolve_storage_dir() -> Path:
 		fallback_dirs.append(Path(main_file).resolve().parent)
 
 	for directory in fallback_dirs:
-		try:
-			directory.mkdir(parents=True, exist_ok=True)
-			probe_file = directory / ".data_bank_write_test"
-			probe_file.write_text("ok", encoding="utf-8")
-			probe_file.unlink(missing_ok=True)
+		if is_writable_directory(directory):
 			return directory
-		except OSError:
-			pass
 
 	return Path.cwd().resolve()
 
@@ -78,7 +77,7 @@ def save_credentials(credentials: dict[str, str]) -> bool:
 			json.dump(credentials, file, indent=2)
 		return True
 	except OSError as error:
-		print(f"Could not save credentials: {error}")
+		print(f"Could not save credentials to '{CONFIG_FILE}': {error}")
 		return False
 
 
@@ -102,7 +101,7 @@ def save_vault(vault: dict[str, str]) -> bool:
 			json.dump(vault, file, indent=2)
 		return True
 	except OSError as error:
-		print(f"Could not save vault data: {error}")
+		print(f"Could not save vault data to '{DATA_FILE}': {error}")
 		return False
 
 
@@ -222,8 +221,12 @@ def change_credentials(credentials: dict[str, str]) -> None:
 		print("Credentials were not saved.")
 
 
-def main() -> None:
+def show_storage_info() -> None:
 	print(f"Storage folder: {STORAGE_DIR}")
+
+
+def main() -> None:
+	show_storage_info()
 	credentials = load_credentials()
 	if not login(credentials):
 		return
@@ -249,7 +252,7 @@ def main() -> None:
 		elif choice == "5":
 			change_credentials(credentials)
 		elif choice == "6":
-			print("Goodbye.")
+			print("You are being Securly Logged Out of Data bank. Goodbye.")
 			break
 		else:
 			print("Invalid option. Please enter 1, 2, 3, 4, 5, or 6.")
