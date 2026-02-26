@@ -1,6 +1,6 @@
 # Data-bank
 
-Simple for-fun Python data vault that stores and retrieves key/value data. This code is just for fun.
+Simple for-fun Python data vault that stores and retrieves key/value data. This code is just for fun. This is being worked alongside Copilot as a team effort.
 
 ## Features
 - Basic login check
