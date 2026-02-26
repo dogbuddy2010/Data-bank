@@ -20,8 +20,10 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 From the project folder:
 
 ```bash
-python3 DATABANK.PY
+python3 run_databank.py
 ```
+
+This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 
 ## Quick Health Check
 To verify storage path and file write access:
