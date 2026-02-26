@@ -454,10 +454,11 @@ def show_security_policy(credentials: dict[str, object]) -> None:
 		MIN_LOCKOUT_SECONDS,
 		MAX_LOCKOUT_SECONDS,
 	)
+	lockout_display = "disabled" if lockout_seconds == 0 else f"{lockout_seconds}s"
 	print(
 		"Active security policy: "
 		f"max_login_attempts={max_attempts}, "
-		f"lockout_seconds={lockout_seconds}"
+		f"lockout={lockout_display}"
 	)
 
 
