@@ -289,13 +289,13 @@ def login(credentials: dict[str, object]) -> bool:
 
 
 def show_menu() -> None:
-    print("\nChoose an option:")
-    print("1) Add data")
+    print("\nChoose an Option:")
+    print("1) Add Data")
     print("2) List all keys")
-    print("3) Retrieve data by key")
-    print("4) Delete data by key")
-    print("5) Change username/password")
-    print("6) Security settings")
+    print("3) Retrieve Data by Key")
+    print("4) Delete Data by Key")
+    print("5) Change Username/Password")
+    print("6) Security Settings")
     print("7) Exit")
 
 
@@ -355,7 +355,7 @@ def delete_data(vault: dict[str, str]) -> None:
 
 
 def change_credentials(credentials: dict[str, object]) -> None:
-    print("\nChange credentials")
+    print("\nChange Credentials")
     current_password = prompt("Enter current password: ")
     if current_password is None:
         return
@@ -396,9 +396,9 @@ def change_security_settings(credentials: dict[str, object]) -> None:
         MAX_LOCKOUT_SECONDS,
     )
 
-    print("\nSecurity settings")
-    print(f"Current max login attempts: {current_attempts}")
-    print(f"Current lockout seconds: {current_lockout}")
+    print("\nSecurity Settings")
+    print(f"Current Max Login Attempts: {current_attempts}")
+    print(f"Current Lockout Seconds: {current_lockout}")
 
     new_attempts_input = prompt(
         f"New max login attempts ({MIN_LOGIN_ATTEMPTS}-{MAX_LOGIN_ATTEMPTS}, blank to keep): "
@@ -460,7 +460,7 @@ def show_security_policy(credentials: dict[str, object]) -> None:
 
 
 def show_storage_info() -> None:
-    print(f"Storage folder: {STORAGE_DIR}")
+    print(f"Storage Folder: {STORAGE_DIR}")
 
 
 def main() -> None:
@@ -493,7 +493,7 @@ def main() -> None:
         elif choice == "6":
             change_security_settings(credentials)
         elif choice == "7":
-            print("You are being Securly Logged Out of Data bank. Goodbye.")
+            print("You are being securely logged out of Data Bank. Goodbye.")
             break
         else:
             print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, or 7.")

@@ -7,14 +7,14 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - Passwords stored as PBKDF2-SHA256 hashes in config (not plaintext)
 - Auto-migrates old plaintext `vault_config.json` passwords to hashed format
 - Login lockout policy is configurable in `vault_config.json`
-- Save data by key
-- List saved keys
-- Retrieve data by key
-- Delete data by key
+- Add Data by Key
+- List Saved Keys
+- Retrieve Data by Key
+- Delete Data by Key
 - Persistent storage in `vault_data.json` (saved in a writable app folder)
 - Persistent login config in `vault_config.json` (saved in a writable app folder)
-- Change username/password from menu option 5
-- Change lockout policy from menu option 6
+- Change Username/Password from menu option 5
+- Change Security Settings from menu option 6
 
 ## Run
 From the project folder:
