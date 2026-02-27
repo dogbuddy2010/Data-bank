@@ -15,6 +15,7 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - Persistent login config in `vault_config.json` (saved in a writable app folder)
 - Change Username/Password from menu option 5
 - Change Security Settings from menu option 6
+- Optional authenticator-app Two-Step Verification (TOTP)
 
 ## Run
 From the project folder:
@@ -47,3 +48,15 @@ Note: `vault_config.json` now stores `password_hash` instead of `password` for s
 Optional security settings in `vault_config.json`:
 - `max_login_attempts` (default `3`, allowed range `1-10`)
 - `lockout_seconds` (default `30`, allowed range `0-300`)
+- `two_step_enabled` (default `false`)
+- `two_step_secret` (base32 secret used for authenticator app codes)
+- `backup_code_hashes` (hashed one-time recovery codes; plaintext codes are not stored)
+
+Two-step verification notes:
+- After password login, users can opt in to 2-step setup.
+- Setup shows a base32 secret and `otpauth://` URI for authenticator apps.
+- During 2-step setup, backup recovery codes are generated and shown once.
+- Once enabled, login requires a valid 6-digit TOTP code.
+- If TOTP is unavailable, a backup recovery code can be used once as fallback.
+- Backup recovery codes can be regenerated from Security Settings, but regeneration requires current password and current 2-step code confirmation.
+- Disabling two-step verification also requires an explicit warning confirmation, then current password and current 2-step code confirmation.
