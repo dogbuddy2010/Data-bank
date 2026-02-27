@@ -910,7 +910,20 @@ def remove_databank_files(credentials: dict[str, object]) -> bool:
 
 def main() -> None:
     show_storage_info()
+    first_run = not CONFIG_FILE.exists()
+    if first_run:
+        print("First-time setup detected for Data-bank.")
+        print(f"A storage folder is being used at: {STORAGE_DIR}")
+        print("Data-bank will create required files for your account and vault data.")
+
     credentials = load_credentials()
+    if first_run:
+        print(f"Created login/security config file: {CONFIG_FILE}")
+        print(
+            "Vault data file will be created automatically after your first saved entry: "
+            f"{DATA_FILE}"
+        )
+
     if not login(credentials):
         return
     show_security_policy(credentials)
