@@ -6,6 +6,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import shutil
 import time
 from typing import Optional
 from urllib.parse import quote
@@ -635,7 +636,8 @@ def show_menu() -> None:
     print("4) Delete Data by Key")
     print("5) Change Username/Password")
     print("6) Security Settings")
-    print("7) Exit")
+    print("7) Remove Data-bank Files (Data-bank files only)")
+    print("8) Exit")
 
 
 def add_data(vault: dict[str, str]) -> None:
@@ -858,6 +860,54 @@ def show_storage_info() -> None:
     print(f"Storage Folder: {STORAGE_DIR}")
 
 
+def remove_databank_files(credentials: dict[str, object]) -> bool:
+    print("\nRemove Data-bank Files")
+    print("This removes only Data-bank files created by this program:")
+    print(f"- {DATA_FILE}")
+    print(f"- {CONFIG_FILE}")
+
+    confirmation_phrase = "DELETE MY DATABANK DATA"
+    typed_phrase = prompt(f"Type exactly '{confirmation_phrase}' to continue: ")
+    if typed_phrase is None:
+        print("Removal cancelled.")
+        return False
+    if typed_phrase != confirmation_phrase:
+        print("Removal cancelled. Confirmation phrase did not match.")
+        return False
+
+    current_password = prompt("Enter current password to confirm removal: ")
+    if current_password is None:
+        print("Removal cancelled.")
+        return False
+    if not verify_password(current_password, str(credentials.get("password_hash", ""))):
+        print("Removal cancelled. Password verification failed.")
+        return False
+
+    removed_any = False
+    for target in (DATA_FILE, CONFIG_FILE):
+        try:
+            if target.exists():
+                target.unlink()
+                removed_any = True
+        except OSError as error:
+            print(f"Could not remove '{target}': {error}")
+            return False
+
+    try:
+        if STORAGE_DIR.exists() and STORAGE_DIR.is_dir() and not any(STORAGE_DIR.iterdir()):
+            shutil.rmtree(STORAGE_DIR)
+    except OSError:
+        pass
+
+    if removed_any:
+        print("Data-bank files were removed successfully.")
+    else:
+        print("No Data-bank files were found to remove.")
+
+    print("Final message: Data-bank cleanup completed. Exiting now.")
+    return True
+
+
 def main() -> None:
     show_storage_info()
     credentials = load_credentials()
@@ -870,7 +920,7 @@ def main() -> None:
 
     while True:
         show_menu()
-        choice = prompt("Enter your choice (1-7): ")
+        choice = prompt("Enter your choice (1-8): ")
         if choice is None:
             print("Goodbye.")
             break
@@ -888,10 +938,13 @@ def main() -> None:
         elif choice == "6":
             change_security_settings(credentials)
         elif choice == "7":
+            if remove_databank_files(credentials):
+                break
+        elif choice == "8":
             print("You are being securely logged out of Data Bank. Goodbye.")
             break
         else:
-            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, or 7.")
+            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, or 8.")
 
 
 if __name__ == "__main__":

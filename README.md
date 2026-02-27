@@ -15,6 +15,7 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - Persistent login config in `vault_config.json` (saved in a writable app folder)
 - Change Username/Password from menu option 5
 - Change Security Settings from menu option 6
+- Remove Data-bank created files from menu option 7 (phrase + password required)
 - Optional authenticator-app Two-Step Verification (TOTP)
 
 ## Run
@@ -38,6 +39,11 @@ Default login:
 - Password: `11`
 
 The app stores data in your home folder under `.data_bank`.
+
+Safe cleanup option:
+- Menu option 7 removes only Data-bank-created files (`vault_data.json` and `vault_config.json`) from the Data-bank storage folder.
+- It does not delete unrelated computer files.
+- It requires typing an exact confirmation phrase and your current password.
 
 The default login works only when `.data_bank/vault_config.json` does not yet exist or has been reset to defaults.
 
