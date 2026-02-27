@@ -1,3 +1,4 @@
+#This code is not to be edited on any circumstance. This is a legacy code file for DATABANK.PY More will be seen. Please do not copy this message when running the code as it will possibly cause an error.
 from __future__ import annotations
 
 import base64
@@ -18,7 +19,6 @@ PASSWORD_HASH_ITERATIONS = 200_000
 DEFAULT_MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_LOCKOUT_SECONDS = 30
 DEFAULT_TWO_STEP_ENABLED = False
-DEFAULT_TWO_STEP_METHOD = "custom_code"
 BACKUP_CODE_COUNT = 8
 MIN_LOGIN_ATTEMPTS = 1
 MAX_LOGIN_ATTEMPTS = 10
@@ -123,9 +123,7 @@ def default_credentials() -> dict[str, object]:
         "max_login_attempts": DEFAULT_MAX_LOGIN_ATTEMPTS,
         "lockout_seconds": DEFAULT_LOCKOUT_SECONDS,
         "two_step_enabled": DEFAULT_TWO_STEP_ENABLED,
-        "two_step_method": DEFAULT_TWO_STEP_METHOD,
         "two_step_secret": "",
-        "two_step_custom_hash": "",
         "backup_code_hashes": [],
     }
 
@@ -196,13 +194,6 @@ def normalize_two_step_secret(secret: object) -> str:
     return candidate
 
 
-def normalize_two_step_method(method: object) -> str:
-    candidate = str(method).strip().lower()
-    if candidate in {"totp", "custom_code"}:
-        return candidate
-    return DEFAULT_TWO_STEP_METHOD
-
-
 def generate_two_step_secret() -> str:
     return base64.b32encode(os.urandom(20)).decode("ascii").rstrip("=")
 
@@ -247,60 +238,28 @@ def verify_totp_code(secret: str, code: str, window: int = 1) -> bool:
 
 
 def setup_two_step_verification(credentials: dict[str, object]) -> bool:
-    print("\nTwo-Step Verification Setup")
-    print("1) Use your own custom verification code (recommended)")
-    print("2) Use authenticator app (TOTP)")
-    method_choice = prompt("Choose method (1/2, default 1): ")
-    method = "totp" if method_choice == "2" else "custom_code"
-
     username = str(credentials.get("username", DEFAULT_USERNAME)).strip() or DEFAULT_USERNAME
-    secret = ""
-    custom_hash = ""
+    secret = generate_two_step_secret()
 
-    if method == "totp":
-        secret = generate_two_step_secret()
+    print("\nTwo-Step Verification Setup")
+    print("Add this secret to your authenticator app:")
+    print(secret)
+    print("Or use this manual URI:")
+    print(provisioning_uri(username, secret))
 
-        print("Add this secret to your authenticator app:")
-        print(secret)
-        print("Or use this manual URI:")
-        print(provisioning_uri(username, secret))
-
-        verification_code = prompt("Enter the current 6-digit code from your app: ")
-        if verification_code is None:
-            print("Two-step setup cancelled.")
-            return False
-        if not verify_totp_code(secret, verification_code):
-            print("Invalid verification code. Two-step was not enabled.")
-            return False
-    else:
-        print("Set a custom 2-step verification code (letters/numbers, at least 6 chars).")
-        first_code = prompt("Enter custom 2-step code: ")
-        if first_code is None:
-            print("Two-step setup cancelled.")
-            return False
-        second_code = prompt("Confirm custom 2-step code: ")
-        if second_code is None:
-            print("Two-step setup cancelled.")
-            return False
-
-        normalized_first = first_code.strip()
-        normalized_second = second_code.strip()
-        if len(normalized_first) < 6:
-            print("Custom 2-step code must be at least 6 characters.")
-            return False
-        if normalized_first != normalized_second:
-            print("Custom 2-step code confirmation did not match.")
-            return False
-
-        custom_hash = hash_password(normalized_first)
+    verification_code = prompt("Enter the current 6-digit code from your app: ")
+    if verification_code is None:
+        print("Two-step setup cancelled.")
+        return False
+    if not verify_totp_code(secret, verification_code):
+        print("Invalid verification code. Two-step was not enabled.")
+        return False
 
     backup_codes = generate_backup_recovery_codes()
     backup_code_hashes = [hash_recovery_code(code) for code in backup_codes]
 
     credentials["two_step_enabled"] = True
-    credentials["two_step_method"] = method
     credentials["two_step_secret"] = secret
-    credentials["two_step_custom_hash"] = custom_hash
     credentials["backup_code_hashes"] = backup_code_hashes
     if save_credentials(credentials):
         print("Two-step verification enabled.")
@@ -323,28 +282,18 @@ def authorize_sensitive_security_action(credentials: dict[str, object]) -> bool:
         return False
 
     if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
-        method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
+        two_step_secret = normalize_two_step_secret(credentials.get("two_step_secret", ""))
+        if not two_step_secret:
+            print("Two-step configuration is invalid.")
+            return False
+
         two_step_code = prompt("Enter current 2-step verification code: ")
         if two_step_code is None:
             print("Security action cancelled.")
             return False
-
-        if method == "totp":
-            two_step_secret = normalize_two_step_secret(credentials.get("two_step_secret", ""))
-            if not two_step_secret:
-                print("Two-step configuration is invalid.")
-                return False
-            if not verify_totp_code(two_step_secret, two_step_code):
-                print("Two-step verification failed.")
-                return False
-        else:
-            custom_hash = str(credentials.get("two_step_custom_hash", "")).strip()
-            if not is_valid_hash_format(custom_hash):
-                print("Two-step configuration is invalid.")
-                return False
-            if not verify_password(two_step_code, custom_hash):
-                print("Two-step verification failed.")
-                return False
+        if not verify_totp_code(two_step_secret, two_step_code):
+            print("Two-step verification failed.")
+            return False
 
     return True
 
@@ -400,15 +349,9 @@ def load_credentials() -> dict[str, object]:
                     data.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED),
                     DEFAULT_TWO_STEP_ENABLED,
                 )
-                two_step_method = normalize_two_step_method(
-                    data.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
-                )
                 two_step_secret = normalize_two_step_secret(data.get("two_step_secret", ""))
-                two_step_custom_hash = str(data.get("two_step_custom_hash", "")).strip()
                 backup_code_hashes = normalize_backup_code_hashes(data.get("backup_code_hashes", []))
-                if two_step_method == "totp" and not two_step_secret:
-                    two_step_enabled = False
-                if two_step_method == "custom_code" and not is_valid_hash_format(two_step_custom_hash):
+                if not two_step_secret:
                     two_step_enabled = False
 
                 if username and password_hash and is_valid_hash_format(password_hash):
@@ -418,9 +361,7 @@ def load_credentials() -> dict[str, object]:
                         "max_login_attempts": max_login_attempts,
                         "lockout_seconds": lockout_seconds,
                         "two_step_enabled": two_step_enabled,
-                        "two_step_method": two_step_method,
                         "two_step_secret": two_step_secret,
-                        "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
                     }
                     save_credentials(credentials)
@@ -433,9 +374,7 @@ def load_credentials() -> dict[str, object]:
                         "max_login_attempts": max_login_attempts,
                         "lockout_seconds": lockout_seconds,
                         "two_step_enabled": two_step_enabled,
-                        "two_step_method": two_step_method,
                         "two_step_secret": two_step_secret,
-                        "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
                     }
                     save_credentials(migrated)
@@ -469,28 +408,15 @@ def save_credentials(credentials: dict[str, object]) -> bool:
             credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED),
             DEFAULT_TWO_STEP_ENABLED,
         ),
-        "two_step_method": normalize_two_step_method(
-            credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
-        ),
         "two_step_secret": normalize_two_step_secret(credentials.get("two_step_secret", "")),
-        "two_step_custom_hash": str(credentials.get("two_step_custom_hash", "")).strip(),
         "backup_code_hashes": normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])),
     }
     if not is_valid_hash_format(normalized["password_hash"]):
         normalized["password_hash"] = hash_password(DEFAULT_PASSWORD)
-    if normalized["two_step_method"] == "totp" and normalized["two_step_enabled"] and not normalized["two_step_secret"]:
-        normalized["two_step_enabled"] = False
-        normalized["backup_code_hashes"] = []
-    if (
-        normalized["two_step_method"] == "custom_code"
-        and normalized["two_step_enabled"]
-        and not is_valid_hash_format(normalized["two_step_custom_hash"])
-    ):
+    if normalized["two_step_enabled"] and not normalized["two_step_secret"]:
         normalized["two_step_enabled"] = False
         normalized["backup_code_hashes"] = []
     if not normalized["two_step_enabled"]:
-        normalized["two_step_secret"] = ""
-        normalized["two_step_custom_hash"] = ""
         normalized["backup_code_hashes"] = []
 
     try:
@@ -556,46 +482,33 @@ def login(credentials: dict[str, object]) -> bool:
         )
         if is_logged_in:
             if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
-                method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
-                two_step_code = prompt("Enter 2-step verification code: ")
-                if two_step_code is None:
-                    return False
-
-                verified = False
-                if method == "totp":
-                    two_step_secret = normalize_two_step_secret(credentials.get("two_step_secret", ""))
-                    if not two_step_secret:
-                        print("Two-step is enabled but setup is invalid. Please reconfigure it.")
-                        is_logged_in = False
-                    else:
-                        verified = verify_totp_code(two_step_secret, two_step_code)
+                two_step_secret = normalize_two_step_secret(credentials.get("two_step_secret", ""))
+                if not two_step_secret:
+                    print("Two-step is enabled but setup is invalid. Please reconfigure it.")
+                    is_logged_in = False
                 else:
-                    custom_hash = str(credentials.get("two_step_custom_hash", "")).strip()
-                    if not is_valid_hash_format(custom_hash):
-                        print("Two-step is enabled but setup is invalid. Please reconfigure it.")
-                        is_logged_in = False
+                    two_step_code = prompt("Enter 2-step verification code: ")
+                    if two_step_code is None:
+                        return False
+                    if verify_totp_code(two_step_secret, two_step_code):
+                        print("Two-step verification successful.")
                     else:
-                        verified = verify_password(two_step_code, custom_hash)
-
-                if verified:
-                    print("Two-step verification successful.")
-                else:
-                    input_hash = hash_recovery_code(two_step_code)
-                    backup_hashes = normalize_backup_code_hashes(
-                        credentials.get("backup_code_hashes", [])
-                    )
-                    if input_hash and input_hash in backup_hashes:
-                        backup_hashes.remove(input_hash)
-                        credentials["backup_code_hashes"] = backup_hashes
-                        if save_credentials(credentials):
-                            print("Backup recovery code accepted.")
-                            print(f"Remaining backup codes: {len(backup_hashes)}")
+                        input_hash = hash_recovery_code(two_step_code)
+                        backup_hashes = normalize_backup_code_hashes(
+                            credentials.get("backup_code_hashes", [])
+                        )
+                        if input_hash and input_hash in backup_hashes:
+                            backup_hashes.remove(input_hash)
+                            credentials["backup_code_hashes"] = backup_hashes
+                            if save_credentials(credentials):
+                                print("Backup recovery code accepted.")
+                                print(f"Remaining backup codes: {len(backup_hashes)}")
+                            else:
+                                print("Backup code matched, but could not update storage safely.")
+                                is_logged_in = False
                         else:
-                            print("Backup code matched, but could not update storage safely.")
+                            print("Invalid 2-step verification code.")
                             is_logged_in = False
-                    else:
-                        print("Invalid 2-step verification code.")
-                        is_logged_in = False
             else:
                 enable_two_step = prompt(
                     "Would you like to enable two-step verification for future logins? (y/N): "
@@ -800,9 +713,7 @@ def change_security_settings(credentials: dict[str, object]) -> None:
         if confirm_disable and confirm_disable.strip().lower() in {"y", "yes"}:
             if authorize_sensitive_security_action(credentials):
                 credentials["two_step_enabled"] = False
-                credentials["two_step_method"] = DEFAULT_TWO_STEP_METHOD
                 credentials["two_step_secret"] = ""
-                credentials["two_step_custom_hash"] = ""
                 credentials["backup_code_hashes"] = []
                 print("Two-step verification disabled.")
             else:
@@ -842,14 +753,12 @@ def show_security_policy(credentials: dict[str, object]) -> None:
         if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED)
         else "disabled"
     )
-    two_step_method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
     backup_count = len(normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])))
     print(
         "Active security policy: "
         f"max_login_attempts={max_attempts}, "
         f"lockout={lockout_display}, "
         f"two_step={two_step_status}, "
-        f"two_step_method={two_step_method}, "
         f"backup_codes={backup_count}"
     )
 

@@ -49,14 +49,18 @@ Optional security settings in `vault_config.json`:
 - `max_login_attempts` (default `3`, allowed range `1-10`)
 - `lockout_seconds` (default `30`, allowed range `0-300`)
 - `two_step_enabled` (default `false`)
+- `two_step_method` (`custom_code` or `totp`)
 - `two_step_secret` (base32 secret used for authenticator app codes)
+- `two_step_custom_hash` (hashed custom code when using `custom_code` method)
 - `backup_code_hashes` (hashed one-time recovery codes; plaintext codes are not stored)
 
 Two-step verification notes:
 - After password login, users can opt in to 2-step setup.
-- Setup shows a base32 secret and `otpauth://` URI for authenticator apps.
+- Setup offers two methods:
+	- `custom_code` (recommended): user creates their own verification code; no mobile app required.
+	- `totp`: authenticator app mode using base32 secret and `otpauth://` URI.
 - During 2-step setup, backup recovery codes are generated and shown once.
-- Once enabled, login requires a valid 6-digit TOTP code.
+- Once enabled, login requires a valid 2-step code for the selected method.
 - If TOTP is unavailable, a backup recovery code can be used once as fallback.
 - Backup recovery codes can be regenerated from Security Settings, but regeneration requires current password and current 2-step code confirmation.
 - Disabling two-step verification also requires an explicit warning confirmation, then current password and current 2-step code confirmation.
