@@ -31,6 +31,8 @@ This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 On first run, Data-bank shows a setup message and creates its login/security config file in the storage folder:
 - `~/.data_bank/vault_config.json` (or fallback writable folder if home is not writable)
 
+First launch now also includes a guided account setup where you can create a custom username/password before login. If skipped or cancelled, default first-launch credentials are used.
+
 The vault data file:
 - `~/.data_bank/vault_data.json`
 
@@ -43,9 +45,7 @@ To verify storage path and file write access:
 python3 health_check.py
 ```
 
-Default login:
-- Username: `guest`
-- Password: `11`
+
 
 The app stores data in your home folder under `.data_bank`.
 
