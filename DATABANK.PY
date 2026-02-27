@@ -860,6 +860,46 @@ def show_storage_info() -> None:
     print(f"Storage Folder: {STORAGE_DIR}")
 
 
+def first_launch_account_setup(credentials: dict[str, object]) -> None:
+    print("\nFirst-Launch Account Setup")
+    print("Create your Data-bank login now.")
+    print("Leave username blank to keep default first-launch credentials.")
+
+    new_username = prompt("New username: ")
+    if new_username is None:
+        print("Account setup cancelled. Using default first-launch credentials.")
+        return
+
+    if not new_username:
+        print("No custom username entered. Using default first-launch credentials.")
+        return
+
+    new_password = prompt("New password: ")
+    if new_password is None:
+        print("Account setup cancelled. Using default first-launch credentials.")
+        return
+
+    confirm_password = prompt("Confirm new password: ")
+    if confirm_password is None:
+        print("Account setup cancelled. Using default first-launch credentials.")
+        return
+
+    if len(new_password) < 4:
+        print("Password must be at least 4 characters. Using default first-launch credentials.")
+        return
+
+    if new_password != confirm_password:
+        print("Password confirmation did not match. Using default first-launch credentials.")
+        return
+
+    credentials["username"] = new_username
+    credentials["password_hash"] = hash_password(new_password)
+    if save_credentials(credentials):
+        print("Account setup complete. Your new login credentials were saved.")
+    else:
+        print("Could not save new account setup. Using default first-launch credentials.")
+
+
 def remove_databank_files(credentials: dict[str, object]) -> bool:
     print("\nRemove Data-bank Files")
     print("This removes only Data-bank files created by this program:")
@@ -923,6 +963,7 @@ def main() -> None:
             "Vault data file will be created automatically after your first saved entry: "
             f"{DATA_FILE}"
         )
+        first_launch_account_setup(credentials)
 
     if not login(credentials):
         return

@@ -27,6 +27,15 @@ python3 run_databank.py
 
 This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 
+## First Launch Behavior
+On first run, Data-bank shows a setup message and creates its login/security config file in the storage folder:
+- `~/.data_bank/vault_config.json` (or fallback writable folder if home is not writable)
+
+The vault data file:
+- `~/.data_bank/vault_data.json`
+
+is created automatically after your first saved vault entry.
+
 ## Quick Health Check
 To verify storage path and file write access:
 
