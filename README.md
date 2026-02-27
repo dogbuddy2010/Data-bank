@@ -45,6 +45,11 @@ To verify storage path and file write access:
 python3 health_check.py
 ```
 
+Default credentials:
+- Username: `guest`
+- Password: `11`
+
+These defaults apply only if first-launch account setup is skipped/cancelled, or if `.data_bank/vault_config.json` is reset to defaults.
 
 
 The app stores data in your home folder under `.data_bank`.
