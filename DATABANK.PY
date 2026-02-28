@@ -5,7 +5,6 @@ import hashlib
 import hmac
 import json
 import os
-import platform
 from pathlib import Path
 import shutil
 import time
@@ -121,18 +120,10 @@ def is_valid_hash_format(stored_hash: str) -> bool:
     return True
 
 
-def current_device_fingerprint() -> str:
-    node = platform.node().strip().lower() or "unknown-node"
-    system = platform.system().strip().lower() or "unknown-system"
-    release = platform.release().strip().lower() or "unknown-release"
-    return f"{system}:{release}:{node}"
-
-
 def default_credentials() -> dict[str, object]:
     return {
         "username": DEFAULT_USERNAME,
         "password_hash": hash_password(DEFAULT_PASSWORD),
-        "device_fingerprint": current_device_fingerprint(),
         "vault_salt": os.urandom(16).hex(),
         "max_login_attempts": DEFAULT_MAX_LOGIN_ATTEMPTS,
         "lockout_seconds": DEFAULT_LOCKOUT_SECONDS,
@@ -519,6 +510,7 @@ def load_credentials() -> dict[str, object]:
         with CONFIG_FILE.open("r", encoding="utf-8") as file:
             data = json.load(file)
             if isinstance(data, dict):
+                legacy_device_field_present = "device_fingerprint" in data
                 username = str(data.get("username", "")).strip()
                 password_hash = str(data.get("password_hash", "")).strip()
                 legacy_password = str(data.get("password", "")).strip()
@@ -538,7 +530,6 @@ def load_credentials() -> dict[str, object]:
                     data.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED),
                     DEFAULT_TWO_STEP_ENABLED,
                 )
-                device_fingerprint = str(data.get("device_fingerprint", "")).strip()
                 two_step_method = normalize_two_step_method(
                     data.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
                 )
@@ -554,7 +545,6 @@ def load_credentials() -> dict[str, object]:
                     credentials = {
                         "username": username,
                         "password_hash": password_hash,
-                        "device_fingerprint": device_fingerprint,
                         "vault_salt": vault_salt,
                         "max_login_attempts": max_login_attempts,
                         "lockout_seconds": lockout_seconds,
@@ -566,13 +556,14 @@ def load_credentials() -> dict[str, object]:
                     }
                     if legacy_two_step_secret:
                         credentials["_legacy_two_step_secret"] = legacy_two_step_secret
+                    if legacy_device_field_present:
+                        save_credentials(credentials)
                     return credentials
 
                 if username and legacy_password:
                     migrated = {
                         "username": username,
                         "password_hash": hash_password(legacy_password),
-                        "device_fingerprint": device_fingerprint,
                         "vault_salt": vault_salt,
                         "max_login_attempts": max_login_attempts,
                         "lockout_seconds": lockout_seconds,
@@ -597,11 +588,9 @@ def load_credentials() -> dict[str, object]:
 
 def save_credentials(credentials: dict[str, object]) -> bool:
     vault_salt = normalize_vault_salt(credentials.get("vault_salt", ""))
-    device_fingerprint = str(credentials.get("device_fingerprint", "")).strip() or current_device_fingerprint()
     normalized = {
         "username": str(credentials.get("username", "")).strip() or DEFAULT_USERNAME,
         "password_hash": str(credentials.get("password_hash", "")).strip(),
-        "device_fingerprint": device_fingerprint,
         "vault_salt": vault_salt,
         "max_login_attempts": clamp_int(
             credentials.get("max_login_attempts", DEFAULT_MAX_LOGIN_ATTEMPTS),
@@ -1097,19 +1086,6 @@ def show_storage_info() -> None:
 
 
 def ensure_local_file_state(credentials: dict[str, object]) -> bool:
-    expected_device = current_device_fingerprint()
-    stored_device = str(credentials.get("device_fingerprint", "")).strip()
-    needs_save = False
-
-    if not stored_device:
-        credentials["device_fingerprint"] = expected_device
-        needs_save = True
-        print("Added current device metadata to config.")
-
-    if needs_save and not save_credentials(credentials):
-        print("Could not update local file state in config.")
-        return False
-
     if DATA_FILE.exists():
         try:
             with DATA_FILE.open("r", encoding="utf-8") as file:
