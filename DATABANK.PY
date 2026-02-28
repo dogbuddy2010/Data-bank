@@ -7,7 +7,10 @@ import json
 import os
 from pathlib import Path
 import shutil
+import sys
+import termios
 import time
+import tty
 from typing import Optional
 from urllib.parse import quote
 
@@ -71,6 +74,42 @@ def prompt(message: str) -> Optional[str]:
     except (EOFError, KeyboardInterrupt):
         print("\nInput cancelled.")
         return None
+
+
+def prompt_password_masked(message: str, mask_char: str = "#") -> Optional[str]:
+    if not sys.stdin.isatty():
+        return prompt(message)
+
+    print(message, end="", flush=True)
+    chars: list[str] = []
+    file_descriptor = sys.stdin.fileno()
+    old_settings = termios.tcgetattr(file_descriptor)
+
+    try:
+        tty.setraw(file_descriptor)
+        while True:
+            char = sys.stdin.read(1)
+            if char in {"\n", "\r"}:
+                print()
+                return "".join(chars).strip()
+            if char == "\x03":
+                raise KeyboardInterrupt
+            if char == "\x04":
+                raise EOFError
+            if char in {"\x7f", "\b"}:
+                if chars:
+                    chars.pop()
+                    print("\b \b", end="", flush=True)
+                continue
+
+            if char.isprintable():
+                chars.append(char)
+                print(mask_char, end="", flush=True)
+    except (EOFError, KeyboardInterrupt):
+        print("\nInput cancelled.")
+        return None
+    finally:
+        termios.tcsetattr(file_descriptor, termios.TCSADRAIN, old_settings)
 
 
 def hash_password(password: str, salt: Optional[bytes] = None) -> str:
@@ -739,7 +778,7 @@ def login(credentials: dict[str, object]) -> bool:
         entered_username = prompt("Username: ")
         if entered_username is None:
             return False
-        entered_password = prompt("Password: ")
+        entered_password = prompt_password_masked("Password: ")
         if entered_password is None:
             return False
 
