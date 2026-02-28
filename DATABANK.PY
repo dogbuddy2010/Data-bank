@@ -23,6 +23,14 @@ except ImportError:
     tty = None
     HAS_TERMIOS = False
 
+try:
+    import msvcrt
+
+    HAS_MSVCRT = True
+except ImportError:
+    msvcrt = None
+    HAS_MSVCRT = False
+
 
 DEFAULT_USERNAME = "guest"
 DEFAULT_PASSWORD = "11"
@@ -88,6 +96,34 @@ def prompt(message: str) -> Optional[str]:
 def prompt_password_masked(message: str, mask_char: str = "#") -> Optional[str]:
     if not sys.stdin.isatty():
         return prompt(message)
+
+    if not HAS_TERMIOS and HAS_MSVCRT:
+        print(message, end="", flush=True)
+        chars: list[str] = []
+        try:
+            while True:
+                char = msvcrt.getwch()
+                if char in {"\r", "\n"}:
+                    print()
+                    return "".join(chars).strip()
+                if char == "\x03":
+                    raise KeyboardInterrupt
+                if char == "\x04":
+                    raise EOFError
+                if char in {"\x08", "\x7f"}:
+                    if chars:
+                        chars.pop()
+                        print("\b \b", end="", flush=True)
+                    continue
+                if char in {"\x00", "\xe0"}:
+                    msvcrt.getwch()
+                    continue
+                if char.isprintable():
+                    chars.append(char)
+                    print(mask_char, end="", flush=True)
+        except (EOFError, KeyboardInterrupt):
+            print("\nInput cancelled.")
+            return None
 
     if not HAS_TERMIOS:
         try:
