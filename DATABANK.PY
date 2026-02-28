@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+import getpass
 import hashlib
 import hmac
 import json
@@ -8,11 +9,19 @@ import os
 from pathlib import Path
 import shutil
 import sys
-import termios
 import time
-import tty
 from typing import Optional
 from urllib.parse import quote
+
+try:
+    import termios
+    import tty
+
+    HAS_TERMIOS = True
+except ImportError:
+    termios = None
+    tty = None
+    HAS_TERMIOS = False
 
 
 DEFAULT_USERNAME = "guest"
@@ -80,10 +89,24 @@ def prompt_password_masked(message: str, mask_char: str = "#") -> Optional[str]:
     if not sys.stdin.isatty():
         return prompt(message)
 
+    if not HAS_TERMIOS:
+        try:
+            return getpass.getpass(message).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nInput cancelled.")
+            return None
+
     print(message, end="", flush=True)
     chars: list[str] = []
     file_descriptor = sys.stdin.fileno()
-    old_settings = termios.tcgetattr(file_descriptor)
+    try:
+        old_settings = termios.tcgetattr(file_descriptor)
+    except (termios.error, OSError):
+        try:
+            return getpass.getpass(message).strip()
+        except (EOFError, KeyboardInterrupt):
+            print("\nInput cancelled.")
+            return None
 
     try:
         tty.setraw(file_descriptor)
