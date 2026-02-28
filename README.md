@@ -1,9 +1,9 @@
 # Data-bank
 
-Simple for-fun Python data vault that stores and retrieves key/value data. This code is just  fun for me to work on. This is being worked alongside Copilot as a team effort.
+A simple Python data vault project for storing and retrieving key/value data. This project is built as a collaborative effort with Copilot.
 
 ## Features
-- Basic login check
+- Login with username/password
 - Passwords stored as PBKDF2-SHA256 hashes in config (not plaintext)
 - Auto-migrates old plaintext `vault_config.json` passwords to hashed format
 - Vault file is encrypted at rest and auto-encrypted on save
@@ -11,16 +11,16 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - New password updates require strength checks
 - Startup checks local Data-bank files and safely handles legacy file formats
 - Login lockout policy is configurable in `vault_config.json`
-- Add Data by Key
-- List Saved Keys
-- Retrieve Data by Key
-- Delete Data by Key
+- Add data by key
+- List saved keys
+- Retrieve data by key
+- Delete data by key
 - Persistent storage in `vault_data.json` (saved in a writable app folder)
 - Persistent login config in `vault_config.json` (saved in a writable app folder)
 - Change Username/Password from menu option 5
 - Change Security Settings from menu option 6
 - Remove Data-bank created files from menu option 7 (phrase + password required)
-- Optional authenticator-app Two-Step Verification (TOTP)
+- Optional authenticator-app two-step verification (TOTP)
 
 ## Run
 From the project folder:
@@ -58,7 +58,7 @@ Safe cleanup option:
 
 Default credentials are deprecated and blocked from login.
 
-After first run, login credentials are saved in `.data_bank/vault_config.json` and can be changed in-app. If you changed them, use the new values from that file.
+After first run, login credentials are saved in `.data_bank/vault_config.json` and can be changed in-app. If you change them, use the updated values.
 
 Note: `vault_config.json` now stores `password_hash` instead of `password` for security. Older plaintext configs are migrated automatically on next successful load.
 

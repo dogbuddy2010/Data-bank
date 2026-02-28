@@ -155,6 +155,19 @@ def to_bool(value: object, default: bool = False) -> bool:
     return default
 
 
+def is_two_step_enabled(credentials: dict[str, object]) -> bool:
+    return to_bool(
+        credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED),
+        DEFAULT_TWO_STEP_ENABLED,
+    )
+
+
+def configured_two_step_method(credentials: dict[str, object]) -> str:
+    return normalize_two_step_method(
+        credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
+    )
+
+
 def set_session_password(password: Optional[str]) -> None:
     global SESSION_PASSWORD
     SESSION_PASSWORD = password
@@ -451,8 +464,8 @@ def authorize_sensitive_security_action(credentials: dict[str, object]) -> bool:
         print("Password confirmation failed.")
         return False
 
-    if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
-        method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
+    if is_two_step_enabled(credentials):
+        method = configured_two_step_method(credentials)
         two_step_code = prompt("Enter current 2-step verification code: ")
         if two_step_code is None:
             print("Security action cancelled.")
@@ -479,7 +492,7 @@ def authorize_sensitive_security_action(credentials: dict[str, object]) -> bool:
 
 
 def regenerate_backup_recovery_codes(credentials: dict[str, object]) -> bool:
-    if not to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
+    if not is_two_step_enabled(credentials):
         print("Two-step verification is not enabled.")
         return False
 
@@ -736,8 +749,8 @@ def login(credentials: dict[str, object]) -> bool:
         )
         if is_logged_in:
             set_session_password(entered_password)
-            if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
-                method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
+            if is_two_step_enabled(credentials):
+                method = configured_two_step_method(credentials)
                 two_step_code = prompt("Enter 2-step verification code: ")
                 if two_step_code is None:
                     set_session_password(None)
@@ -919,8 +932,8 @@ def change_credentials(credentials: dict[str, object], vault: dict[str, str]) ->
 
     reencrypted_totp_secret = ""
     if (
-        to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED)
-        and normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD)) == "totp"
+        is_two_step_enabled(credentials)
+        and configured_two_step_method(credentials) == "totp"
     ):
         current_totp_secret = decrypt_two_step_secret_for_password(credentials, current_password)
         if not current_totp_secret:
@@ -966,7 +979,7 @@ def change_security_settings(credentials: dict[str, object]) -> None:
     print(f"Current Lockout Seconds: {current_lockout}")
     print(
         "Current Two-Step Verification: "
-        f"{'Enabled' if to_bool(credentials.get('two_step_enabled', DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED) else 'Disabled'}"
+        f"{'Enabled' if is_two_step_enabled(credentials) else 'Disabled'}"
     )
     print(
         "Available Backup Recovery Codes: "
@@ -1015,7 +1028,7 @@ def change_security_settings(credentials: dict[str, object]) -> None:
 
     choice = two_step_choice.strip().lower()
     if choice in {"enable", "on", "yes", "y"}:
-        if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED):
+        if is_two_step_enabled(credentials):
             print("Two-step verification is already enabled.")
         else:
             setup_two_step_verification(credentials)
@@ -1066,10 +1079,10 @@ def show_security_policy(credentials: dict[str, object]) -> None:
     lockout_display = "disabled" if lockout_seconds == 0 else f"{lockout_seconds}s"
     two_step_status = (
         "enabled"
-        if to_bool(credentials.get("two_step_enabled", DEFAULT_TWO_STEP_ENABLED), DEFAULT_TWO_STEP_ENABLED)
+        if is_two_step_enabled(credentials)
         else "disabled"
     )
-    two_step_method = normalize_two_step_method(credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD))
+    two_step_method = configured_two_step_method(credentials)
     backup_count = len(normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])))
     print(
         "Active security policy: "
