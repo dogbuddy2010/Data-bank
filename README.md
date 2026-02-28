@@ -6,6 +6,9 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - Basic login check
 - Passwords stored as PBKDF2-SHA256 hashes in config (not plaintext)
 - Auto-migrates old plaintext `vault_config.json` passwords to hashed format
+- Vault file is encrypted at rest and auto-encrypted on save
+- TOTP secrets are encrypted before being stored in config
+- New password updates require strength checks
 - Login lockout policy is configurable in `vault_config.json`
 - Add Data by Key
 - List Saved Keys
@@ -31,7 +34,7 @@ This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 On first run, Data-bank shows a setup message and creates its login/security config file in the storage folder:
 - `~/.data_bank/vault_config.json` (or fallback writable folder if home is not writable)
 
-First launch now also includes a guided account setup where you can create a custom username/password before login. If skipped or cancelled, default first-launch credentials are used.
+First launch includes a required guided account setup where you must create a custom username/password before login.
 
 The vault data file:
 - `~/.data_bank/vault_data.json`
@@ -45,13 +48,6 @@ To verify storage path and file write access:
 python3 health_check.py
 ```
 
-Default credentials:
-- Username: `guest`
-- Password: `11`
-
-These defaults apply only if first-launch account setup is skipped/cancelled, or if `.data_bank/vault_config.json` is reset to defaults.
-
-
 The app stores data in your home folder under `.data_bank`.
 
 Safe cleanup option:
@@ -59,7 +55,7 @@ Safe cleanup option:
 - It does not delete unrelated computer files.
 - It requires typing an exact confirmation phrase and your current password.
 
-The default login works only when `.data_bank/vault_config.json` does not yet exist or has been reset to defaults.
+Default credentials are deprecated and blocked from login.
 
 After first run, login credentials are saved in `.data_bank/vault_config.json` and can be changed in-app. If you changed them, use the new values from that file.
 
@@ -70,9 +66,10 @@ Optional security settings in `vault_config.json`:
 - `lockout_seconds` (default `30`, allowed range `0-300`)
 - `two_step_enabled` (default `false`)
 - `two_step_method` (`custom_code` or `totp`)
-- `two_step_secret` (base32 secret used for authenticator app codes)
+- `two_step_secret_encrypted` (encrypted TOTP secret; plaintext is not stored)
 - `two_step_custom_hash` (hashed custom code when using `custom_code` method)
 - `backup_code_hashes` (hashed one-time recovery codes; plaintext codes are not stored)
+- `vault_salt` (random salt used with password-derived vault encryption key)
 
 Two-step verification notes:
 - After password login, users can opt in to 2-step setup.
