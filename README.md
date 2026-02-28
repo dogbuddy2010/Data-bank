@@ -9,7 +9,7 @@ Simple for-fun Python data vault that stores and retrieves key/value data. This 
 - Vault file is encrypted at rest and auto-encrypted on save
 - TOTP secrets are encrypted before being stored in config
 - New password updates require strength checks
-- Startup checks local Data-bank files and auto-updates config metadata if device details do not match
+- Startup checks local Data-bank files and initializes missing config metadata safely
 - Login lockout policy is configurable in `vault_config.json`
 - Add Data by Key
 - List Saved Keys
@@ -65,7 +65,7 @@ Note: `vault_config.json` now stores `password_hash` instead of `password` for s
 Optional security settings in `vault_config.json`:
 - `max_login_attempts` (default `3`, allowed range `1-10`)
 - `lockout_seconds` (default `30`, allowed range `0-300`)
-- `device_fingerprint` (auto-maintained local device identifier used for startup file consistency checks)
+- `device_fingerprint` (local device metadata set when missing; not enforced as a login/blocking mismatch)
 - `two_step_enabled` (default `false`)
 - `two_step_method` (`custom_code` or `totp`)
 - `two_step_secret_encrypted` (encrypted TOTP secret; plaintext is not stored)
@@ -75,7 +75,7 @@ Optional security settings in `vault_config.json`:
 
 Startup file check behavior:
 - On launch, Data-bank validates local config metadata against the current device.
-- If the stored device metadata does not match, Data-bank updates it automatically.
+- If local device metadata is missing, Data-bank initializes it automatically.
 - If legacy vault format is detected, Data-bank reports it and upgrades it automatically after successful login.
 
 Two-step verification notes:

@@ -1101,13 +1101,10 @@ def ensure_local_file_state(credentials: dict[str, object]) -> bool:
     stored_device = str(credentials.get("device_fingerprint", "")).strip()
     needs_save = False
 
-    if stored_device != expected_device:
+    if not stored_device:
         credentials["device_fingerprint"] = expected_device
         needs_save = True
-        if stored_device:
-            print("Detected device mismatch in config metadata. Updated to current device.")
-        else:
-            print("Added current device metadata to config.")
+        print("Added current device metadata to config.")
 
     if needs_save and not save_credentials(credentials):
         print("Could not update local file state in config.")
