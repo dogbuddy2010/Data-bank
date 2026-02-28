@@ -554,7 +554,7 @@ def setup_two_step_verification(credentials: dict[str, object]) -> bool:
 
 
 def authorize_sensitive_security_action(credentials: dict[str, object]) -> bool:
-    current_password = prompt("Confirm current password: ")
+    current_password = prompt_password_masked("Confirm current password: ")
     if current_password is None:
         print("Security action cancelled.")
         return False
@@ -1003,7 +1003,7 @@ def delete_data(vault: dict[str, str], credentials: dict[str, object]) -> None:
 
 def change_credentials(credentials: dict[str, object], vault: dict[str, str]) -> None:
     print("\nChange Credentials")
-    current_password = prompt("Enter current password: ")
+    current_password = prompt_password_masked("Enter current password: ")
     if current_password is None:
         return
     if not verify_password(current_password, credentials["password_hash"]):
@@ -1013,7 +1013,7 @@ def change_credentials(credentials: dict[str, object], vault: dict[str, str]) ->
     new_username = prompt("New username: ")
     if new_username is None:
         return
-    new_password = prompt("New password: ")
+    new_password = prompt_password_masked("New password: ")
     if new_password is None:
         return
 
@@ -1224,12 +1224,12 @@ def first_launch_account_setup(credentials: dict[str, object]) -> bool:
             print("Username cannot be empty.")
             continue
 
-        new_password = prompt("New password: ")
+        new_password = prompt_password_masked("New password: ")
         if new_password is None:
             print("Account setup cancelled.")
             return False
 
-        confirm_password = prompt("Confirm new password: ")
+        confirm_password = prompt_password_masked("Confirm new password: ")
         if confirm_password is None:
             print("Account setup cancelled.")
             return False
@@ -1278,7 +1278,7 @@ def remove_databank_files(credentials: dict[str, object]) -> bool:
         print("Removal cancelled. Confirmation phrase did not match.")
         return False
 
-    current_password = prompt("Enter current password to confirm removal: ")
+    current_password = prompt_password_masked("Enter current password to confirm removal: ")
     if current_password is None:
         print("Removal cancelled.")
         return False
