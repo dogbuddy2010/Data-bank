@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from collections import deque
 import getpass
 import hashlib
 import hmac
@@ -40,6 +41,7 @@ DEFAULT_MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_LOCKOUT_SECONDS = 30
 DEFAULT_TWO_STEP_ENABLED = False
 DEFAULT_TWO_STEP_METHOD = "custom_code"
+DEFAULT_SECURITY_AI_SENSITIVITY = "high"
 BACKUP_CODE_COUNT = 8
 MIN_LOGIN_ATTEMPTS = 1
 MAX_LOGIN_ATTEMPTS = 10
@@ -83,6 +85,86 @@ def resolve_storage_dir() -> Path:
 STORAGE_DIR = resolve_storage_dir()
 DATA_FILE = STORAGE_DIR / "vault_data.json"
 CONFIG_FILE = STORAGE_DIR / "vault_config.json"
+SECURITY_LOG_FILE = STORAGE_DIR / "security_events.jsonl"
+
+SECURITY_RULE_WINDOW_SECONDS = 300
+SECURITY_AI_PROFILES: dict[str, dict[str, int]] = {
+    "high": {
+        "failed_login_threshold": 6,
+        "failed_login_user_threshold": 2,
+        "single_user_failed_login_spike_threshold": 7,
+        "vault_burst_seconds": 60,
+        "vault_burst_threshold": 14,
+        "unique_key_threshold": 10,
+        "vault_alert_confirmations": 1,
+    },
+    "normal": {
+        "failed_login_threshold": 7,
+        "failed_login_user_threshold": 3,
+        "single_user_failed_login_spike_threshold": 8,
+        "vault_burst_seconds": 60,
+        "vault_burst_threshold": 16,
+        "unique_key_threshold": 12,
+        "vault_alert_confirmations": 2,
+    },
+    "low": {
+        "failed_login_threshold": 10,
+        "failed_login_user_threshold": 4,
+        "single_user_failed_login_spike_threshold": 12,
+        "vault_burst_seconds": 60,
+        "vault_burst_threshold": 22,
+        "unique_key_threshold": 16,
+        "vault_alert_confirmations": 3,
+    },
+}
+
+CURRENT_SECURITY_AI_SENSITIVITY = DEFAULT_SECURITY_AI_SENSITIVITY
+
+ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["failed_login_threshold"]
+ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["failed_login_user_threshold"]
+ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["single_user_failed_login_spike_threshold"]
+ACTIVE_SECURITY_VAULT_BURST_SECONDS = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["vault_burst_seconds"]
+ACTIVE_SECURITY_VAULT_BURST_THRESHOLD = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["vault_burst_threshold"]
+ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["unique_key_threshold"]
+ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS = SECURITY_AI_PROFILES[DEFAULT_SECURITY_AI_SENSITIVITY]["vault_alert_confirmations"]
+
+SESSION_VAULT_ACCESS_TIMESTAMPS: deque[float] = deque()
+SESSION_VAULT_KEY_EVENTS: deque[tuple[float, str]] = deque()
+SECURITY_ALERT_COOLDOWNS: dict[str, float] = {}
+SESSION_VAULT_BURST_COUNT = 0
+SESSION_VAULT_KEY_SPIKE_COUNT = 0
+
+
+def normalize_security_ai_sensitivity(value: object) -> str:
+    candidate = str(value).strip().lower()
+    if candidate in SECURITY_AI_PROFILES:
+        return candidate
+    return DEFAULT_SECURITY_AI_SENSITIVITY
+
+
+def apply_security_ai_sensitivity(sensitivity: object) -> None:
+    """Apply a named sensitivity profile to active Security AI thresholds."""
+    global CURRENT_SECURITY_AI_SENSITIVITY
+    global ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD
+    global ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD
+    global ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD
+    global ACTIVE_SECURITY_VAULT_BURST_SECONDS
+    global ACTIVE_SECURITY_VAULT_BURST_THRESHOLD
+    global ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD
+    global ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS
+
+    normalized = normalize_security_ai_sensitivity(sensitivity)
+    profile = SECURITY_AI_PROFILES[normalized]
+    CURRENT_SECURITY_AI_SENSITIVITY = normalized
+    ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD = profile["failed_login_threshold"]
+    ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD = profile["failed_login_user_threshold"]
+    ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD = profile[
+        "single_user_failed_login_spike_threshold"
+    ]
+    ACTIVE_SECURITY_VAULT_BURST_SECONDS = profile["vault_burst_seconds"]
+    ACTIVE_SECURITY_VAULT_BURST_THRESHOLD = profile["vault_burst_threshold"]
+    ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD = profile["unique_key_threshold"]
+    ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS = profile["vault_alert_confirmations"]
 
 
 def prompt(message: str) -> Optional[str]:
@@ -93,7 +175,216 @@ def prompt(message: str) -> Optional[str]:
         return None
 
 
+def log_security_event(event_name: str, details: Optional[dict[str, object]] = None) -> None:
+    event = {
+        "timestamp": int(time.time()),
+        "event": event_name,
+        "details": details or {},
+    }
+    try:
+        with SECURITY_LOG_FILE.open("a", encoding="utf-8") as file:
+            file.write(json.dumps(event, separators=(",", ":")) + "\n")
+    except OSError:
+        pass
+
+
+def load_recent_security_events(window_seconds: int) -> list[dict[str, object]]:
+    if not SECURITY_LOG_FILE.exists():
+        return []
+
+    cutoff = int(time.time()) - max(1, window_seconds)
+    events: list[dict[str, object]] = []
+    try:
+        with SECURITY_LOG_FILE.open("r", encoding="utf-8") as file:
+            for line in file:
+                line_text = line.strip()
+                if not line_text:
+                    continue
+                try:
+                    parsed = json.loads(line_text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                timestamp = parsed.get("timestamp")
+                if isinstance(timestamp, int) and timestamp >= cutoff:
+                    events.append(parsed)
+    except OSError:
+        return []
+    return events
+
+
+def load_security_events(max_events: int = 500) -> list[dict[str, object]]:
+    if not SECURITY_LOG_FILE.exists():
+        return []
+
+    events: list[dict[str, object]] = []
+    try:
+        with SECURITY_LOG_FILE.open("r", encoding="utf-8") as file:
+            for line in file:
+                line_text = line.strip()
+                if not line_text:
+                    continue
+                try:
+                    parsed = json.loads(line_text)
+                except json.JSONDecodeError:
+                    continue
+                if not isinstance(parsed, dict):
+                    continue
+                timestamp = parsed.get("timestamp")
+                if not isinstance(timestamp, int):
+                    continue
+                event_name = str(parsed.get("event", "")).strip()
+                if not event_name:
+                    continue
+                details = parsed.get("details")
+                normalized_details = details if isinstance(details, dict) else {}
+                events.append(
+                    {
+                        "timestamp": timestamp,
+                        "event": event_name,
+                        "details": normalized_details,
+                    }
+                )
+    except OSError:
+        return []
+
+    if max_events <= 0:
+        return events
+    return events[-max_events:]
+
+
+def format_event_timestamp(timestamp_value: object) -> str:
+    if isinstance(timestamp_value, int):
+        return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(timestamp_value))
+    return "unknown-time"
+
+
+def security_ai_alert(alert_key: str, message: str, cooldown_seconds: int = 120) -> None:
+    now = time.time()
+    last_alert = SECURITY_ALERT_COOLDOWNS.get(alert_key, 0.0)
+    if now - last_alert < cooldown_seconds:
+        return
+
+    SECURITY_ALERT_COOLDOWNS[alert_key] = now
+    print(f"[Security AI] {message}")
+    log_security_event("security_alert", {"key": alert_key, "message": message})
+
+
+def monitor_failed_login_activity(username: str) -> None:
+    """Track failed logins and trigger anomaly alerts based on active thresholds."""
+    normalized_username = username.strip()
+    log_security_event("failed_login", {"username": normalized_username})
+
+    recent_events = load_recent_security_events(SECURITY_RULE_WINDOW_SECONDS)
+    failed_events = [
+        event
+        for event in recent_events
+        if event.get("event") == "failed_login"
+    ]
+    by_username: dict[str, int] = {}
+    for event in failed_events:
+        details = event.get("details")
+        candidate = "unknown"
+        if isinstance(details, dict):
+            parsed = str(details.get("username", "")).strip()
+            if parsed:
+                candidate = parsed
+        by_username[candidate] = by_username.get(candidate, 0) + 1
+
+    distinct_usernames = {
+        user
+        for user in by_username
+        if user and user != "unknown"
+    }
+    max_single_user_attempts = max(by_username.values(), default=0)
+
+    if (
+        len(failed_events) >= ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD
+        and len(distinct_usernames) >= 2
+    ):
+        security_ai_alert(
+            "failed_login_burst",
+            "High failed-login volume detected in the last 5 minutes.",
+        )
+
+    if max_single_user_attempts >= ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD:
+        security_ai_alert(
+            "failed_login_single_user_spike",
+            "A single account is seeing repeated failed login attempts.",
+        )
+
+    if len(distinct_usernames) >= ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD:
+        security_ai_alert(
+            "failed_login_multi_user",
+            "Multiple usernames are failing login attempts in a short window.",
+        )
+
+
+def monitor_vault_access_activity(action: str, key: Optional[str] = None) -> None:
+    """Track vault access behavior and alert on unusual session patterns."""
+    global SESSION_VAULT_BURST_COUNT
+    global SESSION_VAULT_KEY_SPIKE_COUNT
+
+    now = time.time()
+    log_security_event("vault_access", {"action": action, "key": key or ""})
+
+    if action == "list_keys":
+        return
+
+    SESSION_VAULT_ACCESS_TIMESTAMPS.append(now)
+    while (
+        SESSION_VAULT_ACCESS_TIMESTAMPS
+        and now - SESSION_VAULT_ACCESS_TIMESTAMPS[0] > ACTIVE_SECURITY_VAULT_BURST_SECONDS
+    ):
+        SESSION_VAULT_ACCESS_TIMESTAMPS.popleft()
+
+    if len(SESSION_VAULT_ACCESS_TIMESTAMPS) >= ACTIVE_SECURITY_VAULT_BURST_THRESHOLD:
+        SESSION_VAULT_BURST_COUNT += 1
+    else:
+        SESSION_VAULT_BURST_COUNT = 0
+
+    if SESSION_VAULT_BURST_COUNT >= ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS:
+        security_ai_alert(
+            "vault_access_burst",
+            "Unusual vault access rate detected in the current session.",
+            cooldown_seconds=90,
+        )
+        SESSION_VAULT_BURST_COUNT = 0
+
+    if key:
+        normalized_key = key.strip()
+        if normalized_key:
+            SESSION_VAULT_KEY_EVENTS.append((now, normalized_key))
+            while SESSION_VAULT_KEY_EVENTS and now - SESSION_VAULT_KEY_EVENTS[0][0] > ACTIVE_SECURITY_VAULT_BURST_SECONDS:
+                SESSION_VAULT_KEY_EVENTS.popleft()
+
+            unique_keys = {event_key for _, event_key in SESSION_VAULT_KEY_EVENTS}
+            if len(unique_keys) >= ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD:
+                SESSION_VAULT_KEY_SPIKE_COUNT += 1
+            else:
+                SESSION_VAULT_KEY_SPIKE_COUNT = 0
+
+            if SESSION_VAULT_KEY_SPIKE_COUNT >= ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS:
+                security_ai_alert(
+                    "vault_unique_key_spike",
+                    "Many different vault keys were accessed quickly. Review for unusual activity.",
+                    cooldown_seconds=120,
+                )
+                SESSION_VAULT_KEY_SPIKE_COUNT = 0
+
+
+def monitor_sensitive_action_failure(event_name: str) -> None:
+    log_security_event(event_name)
+    security_ai_alert(
+        f"{event_name}_alert",
+        "Sensitive action failed verification and was blocked.",
+        cooldown_seconds=45,
+    )
+
+
 def prompt_password_masked(message: str, mask_char: str = "#") -> Optional[str]:
+    """Read sensitive input with masked terminal feedback and safe fallbacks."""
     if not sys.stdin.isatty():
         return prompt(message)
 
@@ -172,6 +463,7 @@ def prompt_password_masked(message: str, mask_char: str = "#") -> Optional[str]:
 
 
 def hash_password(password: str, salt: Optional[bytes] = None) -> str:
+    """Hash a password using PBKDF2-SHA256 with per-password salt."""
     password_bytes = password.encode("utf-8")
     if salt is None:
         salt = os.urandom(16)
@@ -185,6 +477,7 @@ def hash_password(password: str, salt: Optional[bytes] = None) -> str:
 
 
 def verify_password(password: str, stored_hash: str) -> bool:
+    """Verify a password against a stored PBKDF2 hash string."""
     parts = stored_hash.split("$")
     if len(parts) != 4 or parts[0] != PASSWORD_HASH_PREFIX:
         return False
@@ -227,6 +520,7 @@ def default_credentials() -> dict[str, object]:
         "lockout_seconds": DEFAULT_LOCKOUT_SECONDS,
         "two_step_enabled": DEFAULT_TWO_STEP_ENABLED,
         "two_step_method": DEFAULT_TWO_STEP_METHOD,
+        "security_ai_sensitivity": DEFAULT_SECURITY_AI_SENSITIVITY,
         "two_step_secret_encrypted": "",
         "two_step_custom_hash": "",
         "backup_code_hashes": [],
@@ -268,7 +562,15 @@ def configured_two_step_method(credentials: dict[str, object]) -> str:
 
 def set_session_password(password: Optional[str]) -> None:
     global SESSION_PASSWORD
+    global SESSION_VAULT_BURST_COUNT
+    global SESSION_VAULT_KEY_SPIKE_COUNT
+
     SESSION_PASSWORD = password
+    if password is None:
+        SESSION_VAULT_ACCESS_TIMESTAMPS.clear()
+        SESSION_VAULT_KEY_EVENTS.clear()
+        SESSION_VAULT_BURST_COUNT = 0
+        SESSION_VAULT_KEY_SPIKE_COUNT = 0
 
 
 def get_session_password() -> Optional[str]:
@@ -283,6 +585,7 @@ def normalize_vault_salt(salt: object) -> str:
 
 
 def derive_encryption_keys(password: str, vault_salt_hex: str) -> tuple[bytes, bytes]:
+    """Derive encryption and MAC keys from the session password and vault salt."""
     salt = bytes.fromhex(vault_salt_hex)
     key_material = hashlib.pbkdf2_hmac(
         "sha256",
@@ -305,6 +608,7 @@ def xor_keystream(data: bytes, key: bytes, nonce: bytes) -> bytes:
 
 
 def encrypt_text_with_password(plain_text: str, password: str, vault_salt_hex: str) -> str:
+    """Encrypt and authenticate plaintext using derived keys and random nonce."""
     encryption_key, mac_key = derive_encryption_keys(password, vault_salt_hex)
     nonce = os.urandom(16)
     plain_bytes = plain_text.encode("utf-8")
@@ -315,6 +619,7 @@ def encrypt_text_with_password(plain_text: str, password: str, vault_salt_hex: s
 
 
 def decrypt_text_with_password(cipher_text: str, password: str, vault_salt_hex: str) -> Optional[str]:
+    """Decrypt and verify ciphertext integrity with password-derived keys."""
     encryption_key, mac_key = derive_encryption_keys(password, vault_salt_hex)
     try:
         token_bytes = base64.urlsafe_b64decode(cipher_text.encode("utf-8"))
@@ -554,6 +859,7 @@ def setup_two_step_verification(credentials: dict[str, object]) -> bool:
 
 
 def authorize_sensitive_security_action(credentials: dict[str, object]) -> bool:
+    """Require strong re-authentication for sensitive security operations."""
     current_password = prompt_password_masked("Confirm current password: ")
     if current_password is None:
         print("Security action cancelled.")
@@ -612,6 +918,7 @@ def regenerate_backup_recovery_codes(credentials: dict[str, object]) -> bool:
 
 
 def load_credentials() -> dict[str, object]:
+    """Load and normalize credentials/config, including legacy migration paths."""
     if not CONFIG_FILE.exists():
         defaults = default_credentials()
         save_credentials(defaults)
@@ -644,6 +951,9 @@ def load_credentials() -> dict[str, object]:
                 two_step_method = normalize_two_step_method(
                     data.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
                 )
+                security_ai_sensitivity = normalize_security_ai_sensitivity(
+                    data.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+                )
                 vault_salt = normalize_vault_salt(data.get("vault_salt", ""))
                 two_step_secret_encrypted = str(data.get("two_step_secret_encrypted", "")).strip()
                 legacy_two_step_secret = normalize_two_step_secret(data.get("two_step_secret", ""))
@@ -661,6 +971,7 @@ def load_credentials() -> dict[str, object]:
                         "lockout_seconds": lockout_seconds,
                         "two_step_enabled": two_step_enabled,
                         "two_step_method": two_step_method,
+                        "security_ai_sensitivity": security_ai_sensitivity,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
                         "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
@@ -680,6 +991,7 @@ def load_credentials() -> dict[str, object]:
                         "lockout_seconds": lockout_seconds,
                         "two_step_enabled": two_step_enabled,
                         "two_step_method": two_step_method,
+                        "security_ai_sensitivity": security_ai_sensitivity,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
                         "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
@@ -698,6 +1010,7 @@ def load_credentials() -> dict[str, object]:
 
 
 def save_credentials(credentials: dict[str, object]) -> bool:
+    """Persist normalized credentials and security configuration safely."""
     vault_salt = normalize_vault_salt(credentials.get("vault_salt", ""))
     normalized = {
         "username": str(credentials.get("username", "")).strip() or DEFAULT_USERNAME,
@@ -721,6 +1034,9 @@ def save_credentials(credentials: dict[str, object]) -> bool:
         ),
         "two_step_method": normalize_two_step_method(
             credentials.get("two_step_method", DEFAULT_TWO_STEP_METHOD)
+        ),
+        "security_ai_sensitivity": normalize_security_ai_sensitivity(
+            credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
         ),
         "two_step_secret_encrypted": str(credentials.get("two_step_secret_encrypted", "")).strip(),
         "two_step_custom_hash": str(credentials.get("two_step_custom_hash", "")).strip(),
@@ -763,6 +1079,7 @@ def save_credentials(credentials: dict[str, object]) -> bool:
 
 
 def load_vault(credentials: dict[str, object]) -> dict[str, str]:
+    """Load encrypted vault data for the authenticated session password."""
     if not DATA_FILE.exists():
         return {}
 
@@ -797,6 +1114,7 @@ def load_vault(credentials: dict[str, object]) -> dict[str, str]:
 
 
 def save_vault(vault: dict[str, str], credentials: dict[str, object]) -> bool:
+    """Encrypt and persist the current vault state to disk."""
     session_password = get_session_password()
     if session_password is None:
         print("Vault could not be saved: no authenticated session password is available.")
@@ -817,6 +1135,7 @@ def save_vault(vault: dict[str, str], credentials: dict[str, object]) -> bool:
 
 
 def login(credentials: dict[str, object]) -> bool:
+    """Authenticate user identity and enforce optional 2-step verification."""
     set_session_password(None)
     print("=== DATA BANK ===")
     print("Please log in to continue.")
@@ -846,6 +1165,7 @@ def login(credentials: dict[str, object]) -> bool:
             and verify_password(entered_password, credentials["password_hash"])
         )
         if is_logged_in:
+            log_security_event("login_success", {"username": entered_username.strip()})
             set_session_password(entered_password)
             if is_two_step_enabled(credentials):
                 method = configured_two_step_method(credentials)
@@ -913,6 +1233,9 @@ def login(credentials: dict[str, object]) -> bool:
                 print("Authentication completed.")
                 return True
             set_session_password(None)
+            monitor_sensitive_action_failure("login_second_factor_failed")
+        else:
+            monitor_failed_login_activity(entered_username)
 
         attempts_left = max_attempts - attempt
         if attempts_left > 0:
@@ -943,7 +1266,76 @@ def show_menu() -> None:
     print("5) Change Username/Password")
     print("6) Security Settings")
     print("7) Remove Data-bank Files (Data-bank files only)")
-    print("8) Exit")
+    print("8) Security AI Report (requires heavy auth)")
+    print("9) Exit")
+
+
+def view_security_ai_report(credentials: dict[str, object]) -> None:
+    """Show a protected summary of Security AI detections and risk events."""
+    print("\nSecurity AI Report")
+    print("This report requires password confirmation")
+    print("and 2-step verification if it is enabled.")
+
+    if not authorize_sensitive_security_action(credentials):
+        monitor_sensitive_action_failure("security_report_access_denied")
+        print("Access denied: unable to verify identity for Security AI report.")
+        return
+
+    events = load_security_events(1000)
+    if not events:
+        print("No security events were found yet.")
+        return
+
+    now = int(time.time())
+    cutoff_24h = now - 24 * 60 * 60
+    recent_events = [
+        event
+        for event in events
+        if isinstance(event.get("timestamp"), int) and event["timestamp"] >= cutoff_24h
+    ]
+
+    failed_logins = [event for event in recent_events if event.get("event") == "failed_login"]
+    ai_alerts = [event for event in recent_events if event.get("event") == "security_alert"]
+    blocked_sensitive = [
+        event
+        for event in recent_events
+        if str(event.get("event", "")).endswith("_failed")
+        or str(event.get("event", "")).endswith("_cancelled")
+        or event.get("event") in {"login_second_factor_failed", "security_report_access_denied"}
+    ]
+
+    print("\nLast 24 hours summary:")
+    print(f"- Failed login attempts: {len(failed_logins)}")
+    print(f"- AI detections/alerts: {len(ai_alerts)}")
+    print(f"- Blocked sensitive actions: {len(blocked_sensitive)}")
+
+    if failed_logins:
+        by_username: dict[str, int] = {}
+        for event in failed_logins:
+            details = event.get("details")
+            username = "unknown"
+            if isinstance(details, dict):
+                candidate = str(details.get("username", "")).strip()
+                if candidate:
+                    username = candidate
+            by_username[username] = by_username.get(username, 0) + 1
+
+        print("\nFailed logins by username (last 24h):")
+        for username, count in sorted(by_username.items(), key=lambda pair: pair[1], reverse=True)[:10]:
+            print(f"- {username}: {count}")
+
+    print("\nRecent AI detections (last 24h):")
+    if ai_alerts:
+        for event in ai_alerts[-10:]:
+            details = event.get("details")
+            message = "Security alert triggered."
+            if isinstance(details, dict):
+                candidate = str(details.get("message", "")).strip()
+                if candidate:
+                    message = candidate
+            print(f"- {format_event_timestamp(event.get('timestamp'))}: {message}")
+    else:
+        print("- None")
 
 
 def add_data(vault: dict[str, str], credentials: dict[str, object]) -> None:
@@ -966,6 +1358,7 @@ def add_data(vault: dict[str, str], credentials: dict[str, object]) -> None:
 
 
 def list_data(vault: dict[str, str]) -> None:
+    monitor_vault_access_activity("list_keys")
     if not vault:
         print("Vault is empty.")
         return
@@ -980,8 +1373,10 @@ def retrieve_data(vault: dict[str, str]) -> None:
     if key is None:
         return
     if key in vault:
+        monitor_vault_access_activity("retrieve_key", key)
         print(f"Value: {vault[key]}")
     else:
+        monitor_vault_access_activity("retrieve_missing_key", key)
         print("No data found for that key.")
 
 
@@ -990,6 +1385,7 @@ def delete_data(vault: dict[str, str], credentials: dict[str, object]) -> None:
     if key is None:
         return
     if key in vault:
+        monitor_vault_access_activity("delete_key", key)
         original_value = vault[key]
         del vault[key]
         if save_vault(vault, credentials):
@@ -1059,6 +1455,7 @@ def change_credentials(credentials: dict[str, object], vault: dict[str, str]) ->
 
 
 def change_security_settings(credentials: dict[str, object]) -> None:
+    """Update security controls and enforce auth for high-risk setting changes."""
     current_attempts = clamp_int(
         credentials.get("max_login_attempts", DEFAULT_MAX_LOGIN_ATTEMPTS),
         DEFAULT_MAX_LOGIN_ATTEMPTS,
@@ -1083,6 +1480,10 @@ def change_security_settings(credentials: dict[str, object]) -> None:
         "Available Backup Recovery Codes: "
         f"{len(normalize_backup_code_hashes(credentials.get('backup_code_hashes', [])))}"
     )
+    current_ai_sensitivity = normalize_security_ai_sensitivity(
+        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+    )
+    print(f"Current Security AI Sensitivity: {current_ai_sensitivity}")
 
     new_attempts_input = prompt(
         f"New max login attempts ({MIN_LOGIN_ATTEMPTS}-{MAX_LOGIN_ATTEMPTS}, blank to keep): "
@@ -1104,7 +1505,17 @@ def change_security_settings(credentials: dict[str, object]) -> None:
     if regen_choice is None:
         return
 
-    if not new_attempts_input and not new_lockout_input and not two_step_choice and not regen_choice:
+    sensitivity_choice = prompt("Security AI sensitivity (high/normal/low/keep): ")
+    if sensitivity_choice is None:
+        return
+
+    if (
+        not new_attempts_input
+        and not new_lockout_input
+        and not two_step_choice
+        and not regen_choice
+        and not sensitivity_choice
+    ):
         print("No changes made.")
         return
 
@@ -1155,6 +1566,24 @@ def change_security_settings(credentials: dict[str, object]) -> None:
     if regen_choice.strip().lower() in {"y", "yes"}:
         regenerate_backup_recovery_codes(credentials)
 
+    sensitivity_normalized = sensitivity_choice.strip().lower()
+    if sensitivity_normalized in {"high", "normal", "low"}:
+        if sensitivity_normalized != current_ai_sensitivity:
+            print("Changing Security AI sensitivity requires full verification.")
+            if not authorize_sensitive_security_action(credentials):
+                monitor_sensitive_action_failure("security_ai_sensitivity_change_cancelled")
+                print("AI sensitivity was not changed. Verification failed.")
+            else:
+                credentials["security_ai_sensitivity"] = sensitivity_normalized
+                apply_security_ai_sensitivity(sensitivity_normalized)
+                print(f"Security AI sensitivity set to {sensitivity_normalized}.")
+        else:
+            print("Security AI sensitivity is already set to that value.")
+    elif sensitivity_normalized in {"", "keep"}:
+        pass
+    else:
+        print("Unknown sensitivity choice. Keeping current sensitivity.")
+
     if save_credentials(credentials):
         print("Security settings updated.")
     else:
@@ -1182,13 +1611,17 @@ def show_security_policy(credentials: dict[str, object]) -> None:
     )
     two_step_method = configured_two_step_method(credentials)
     backup_count = len(normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])))
+    ai_sensitivity = normalize_security_ai_sensitivity(
+        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+    )
     print(
         "Active security policy: "
         f"max_login_attempts={max_attempts}, "
         f"lockout={lockout_display}, "
         f"two_step={two_step_status}, "
         f"two_step_method={two_step_method}, "
-        f"backup_codes={backup_count}"
+        f"backup_codes={backup_count}, "
+        f"security_ai_sensitivity={ai_sensitivity}"
     )
 
 
@@ -1264,6 +1697,7 @@ def enforce_non_default_login(credentials: dict[str, object]) -> bool:
 
 
 def remove_databank_files(credentials: dict[str, object]) -> bool:
+    """Perform destructive cleanup of Data-bank files after strict verification."""
     print("\nRemove Data-bank Files")
     print("This removes only Data-bank files created by this program:")
     print(f"- {DATA_FILE}")
@@ -1272,17 +1706,21 @@ def remove_databank_files(credentials: dict[str, object]) -> bool:
     confirmation_phrase = "DELETE MY DATABANK DATA"
     typed_phrase = prompt(f"Type exactly '{confirmation_phrase}' to continue: ")
     if typed_phrase is None:
+        monitor_sensitive_action_failure("remove_files_cancelled")
         print("Removal cancelled.")
         return False
     if typed_phrase != confirmation_phrase:
+        monitor_sensitive_action_failure("remove_files_phrase_failed")
         print("Removal cancelled. Confirmation phrase did not match.")
         return False
 
     current_password = prompt_password_masked("Enter current password to confirm removal: ")
     if current_password is None:
+        monitor_sensitive_action_failure("remove_files_password_cancelled")
         print("Removal cancelled.")
         return False
     if not verify_password(current_password, str(credentials.get("password_hash", ""))):
+        monitor_sensitive_action_failure("remove_files_password_failed")
         print("Removal cancelled. Password verification failed.")
         return False
 
@@ -1320,6 +1758,9 @@ def main() -> None:
         print("Data-bank will create required files for your account and vault data.")
 
     credentials = load_credentials()
+    apply_security_ai_sensitivity(
+        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+    )
     if first_run:
         print(f"Created login/security config file: {CONFIG_FILE}")
         print(
@@ -1352,7 +1793,7 @@ def main() -> None:
 
     while True:
         show_menu()
-        choice = prompt("Enter your choice (1-8): ")
+        choice = prompt("Enter your choice (1-9): ")
         if choice is None:
             print("Goodbye.")
             break
@@ -1373,11 +1814,13 @@ def main() -> None:
             if remove_databank_files(credentials):
                 break
         elif choice == "8":
+            view_security_ai_report(credentials)
+        elif choice == "9":
             print("You are being securely logged out of Data Bank. Goodbye.")
             set_session_password(None)
             break
         else:
-            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, or 8.")
+            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, 8, or 9.")
 
 
 if __name__ == "__main__":
