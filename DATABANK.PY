@@ -42,6 +42,11 @@ DEFAULT_LOCKOUT_SECONDS = 30
 DEFAULT_TWO_STEP_ENABLED = False
 DEFAULT_TWO_STEP_METHOD = "custom_code"
 DEFAULT_SECURITY_AI_SENSITIVITY = "high"
+DEFAULT_SECURITY_AI_LEARNING_ENABLED = True
+SECURITY_AI_LEARNING_ALPHA = 0.35
+SECURITY_AI_MAX_ADJUSTMENT = 6
+SECURITY_AI_BASELINE_WINDOW_SECONDS = 24 * 60 * 60
+STARTUP_INTEGRITY_CHECK_INTERVAL_SECONDS = 6 * 60 * 60
 BACKUP_CODE_COUNT = 8
 MIN_LOGIN_ATTEMPTS = 1
 MAX_LOGIN_ATTEMPTS = 10
@@ -142,6 +147,33 @@ def normalize_security_ai_sensitivity(value: object) -> str:
     return DEFAULT_SECURITY_AI_SENSITIVITY
 
 
+def normalize_hex_digest(value: object, length: int = 64) -> str:
+    candidate = str(value).strip().lower()
+    if len(candidate) == length and all(ch in "0123456789abcdef" for ch in candidate):
+        return candidate
+    return ""
+
+
+def normalize_ai_learning_state(value: object) -> dict[str, float]:
+    defaults: dict[str, float] = {
+        "failed_login_ewma": 0.0,
+        "vault_access_ewma": 0.0,
+        "unique_key_ewma": 0.0,
+        "sample_count": 0.0,
+    }
+    if not isinstance(value, dict):
+        return defaults
+
+    normalized = defaults.copy()
+    for key in defaults:
+        try:
+            parsed = float(value.get(key, defaults[key]))
+        except (TypeError, ValueError):
+            parsed = defaults[key]
+        normalized[key] = max(0.0, parsed)
+    return normalized
+
+
 def apply_security_ai_sensitivity(sensitivity: object) -> None:
     """Apply a named sensitivity profile to active Security AI thresholds."""
     global CURRENT_SECURITY_AI_SENSITIVITY
@@ -165,6 +197,118 @@ def apply_security_ai_sensitivity(sensitivity: object) -> None:
     ACTIVE_SECURITY_VAULT_BURST_THRESHOLD = profile["vault_burst_threshold"]
     ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD = profile["unique_key_threshold"]
     ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS = profile["vault_alert_confirmations"]
+
+
+def collect_security_ai_learning_sample(
+    window_seconds: int = SECURITY_AI_BASELINE_WINDOW_SECONDS,
+) -> dict[str, float]:
+    recent_events = load_recent_security_events(window_seconds)
+    failed_login_count = sum(1 for event in recent_events if event.get("event") == "failed_login")
+    vault_events = [event for event in recent_events if event.get("event") == "vault_access"]
+
+    unique_keys: set[str] = set()
+    for event in vault_events:
+        details = event.get("details")
+        if not isinstance(details, dict):
+            continue
+        key = str(details.get("key", "")).strip()
+        if key:
+            unique_keys.add(key)
+
+    return {
+        "failed_login_count": float(failed_login_count),
+        "vault_access_count": float(len(vault_events)),
+        "unique_key_count": float(len(unique_keys)),
+    }
+
+
+def apply_adaptive_security_ai(credentials: dict[str, object]) -> None:
+    """Adapt Security AI thresholds using a bounded EWMA model of recent activity."""
+    global ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD
+    global ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD
+    global ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD
+    global ACTIVE_SECURITY_VAULT_BURST_THRESHOLD
+    global ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD
+    global ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS
+
+    if not to_bool(
+        credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
+        DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+    ):
+        return
+
+    learning_state = normalize_ai_learning_state(credentials.get("ai_learning_state", {}))
+    sample = collect_security_ai_learning_sample()
+
+    sample_count = int(learning_state["sample_count"])
+    alpha = SECURITY_AI_LEARNING_ALPHA
+    if sample_count <= 0:
+        learning_state["failed_login_ewma"] = sample["failed_login_count"]
+        learning_state["vault_access_ewma"] = sample["vault_access_count"]
+        learning_state["unique_key_ewma"] = sample["unique_key_count"]
+    else:
+        learning_state["failed_login_ewma"] = (
+            (1.0 - alpha) * learning_state["failed_login_ewma"]
+            + alpha * sample["failed_login_count"]
+        )
+        learning_state["vault_access_ewma"] = (
+            (1.0 - alpha) * learning_state["vault_access_ewma"]
+            + alpha * sample["vault_access_count"]
+        )
+        learning_state["unique_key_ewma"] = (
+            (1.0 - alpha) * learning_state["unique_key_ewma"]
+            + alpha * sample["unique_key_count"]
+        )
+
+    learning_state["sample_count"] = float(min(10_000, sample_count + 1))
+    credentials["ai_learning_state"] = learning_state
+
+    confidence = min(1.0, learning_state["sample_count"] / 8.0)
+    failed_adjustment = min(
+        SECURITY_AI_MAX_ADJUSTMENT,
+        int((learning_state["failed_login_ewma"] / 5.0) * confidence),
+    )
+    vault_adjustment = min(
+        SECURITY_AI_MAX_ADJUSTMENT,
+        int((learning_state["vault_access_ewma"] / 25.0) * confidence),
+    )
+    unique_adjustment = min(
+        SECURITY_AI_MAX_ADJUSTMENT,
+        int((learning_state["unique_key_ewma"] / 6.0) * confidence),
+    )
+
+    ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD = min(
+        40,
+        max(2, ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD + failed_adjustment),
+    )
+    ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD = min(
+        15,
+        max(1, ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD + min(3, unique_adjustment)),
+    )
+    ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD = min(
+        40,
+        max(3, ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD + failed_adjustment),
+    )
+    ACTIVE_SECURITY_VAULT_BURST_THRESHOLD = min(
+        120,
+        max(4, ACTIVE_SECURITY_VAULT_BURST_THRESHOLD + vault_adjustment),
+    )
+    ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD = min(
+        80,
+        max(3, ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD + unique_adjustment),
+    )
+    if confidence >= 0.5 and (vault_adjustment >= 3 or unique_adjustment >= 3):
+        ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS = min(
+            5,
+            ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS + 1,
+        )
+
+
+def apply_security_ai_profile(credentials: dict[str, object]) -> None:
+    apply_security_ai_sensitivity(
+        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+    )
+    apply_adaptive_security_ai(credentials)
 
 
 def prompt(message: str) -> Optional[str]:
@@ -521,6 +665,10 @@ def default_credentials() -> dict[str, object]:
         "two_step_enabled": DEFAULT_TWO_STEP_ENABLED,
         "two_step_method": DEFAULT_TWO_STEP_METHOD,
         "security_ai_sensitivity": DEFAULT_SECURITY_AI_SENSITIVITY,
+        "security_ai_learning_enabled": DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+        "ai_learning_state": normalize_ai_learning_state({}),
+        "vault_integrity_hash": "",
+        "vault_integrity_last_verified": 0,
         "two_step_secret_encrypted": "",
         "two_step_custom_hash": "",
         "backup_code_hashes": [],
@@ -954,7 +1102,24 @@ def load_credentials() -> dict[str, object]:
                 security_ai_sensitivity = normalize_security_ai_sensitivity(
                     data.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
                 )
+                security_ai_learning_enabled = to_bool(
+                    data.get(
+                        "security_ai_learning_enabled",
+                        DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+                    ),
+                    DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+                )
+                ai_learning_state = normalize_ai_learning_state(data.get("ai_learning_state", {}))
                 vault_salt = normalize_vault_salt(data.get("vault_salt", ""))
+                vault_integrity_hash = normalize_hex_digest(
+                    data.get("vault_integrity_hash", "")
+                )
+                vault_integrity_last_verified = clamp_int(
+                    data.get("vault_integrity_last_verified", 0),
+                    0,
+                    0,
+                    2_147_483_647,
+                )
                 two_step_secret_encrypted = str(data.get("two_step_secret_encrypted", "")).strip()
                 legacy_two_step_secret = normalize_two_step_secret(data.get("two_step_secret", ""))
                 two_step_custom_hash = str(data.get("two_step_custom_hash", "")).strip()
@@ -972,6 +1137,10 @@ def load_credentials() -> dict[str, object]:
                         "two_step_enabled": two_step_enabled,
                         "two_step_method": two_step_method,
                         "security_ai_sensitivity": security_ai_sensitivity,
+                        "security_ai_learning_enabled": security_ai_learning_enabled,
+                        "ai_learning_state": ai_learning_state,
+                        "vault_integrity_hash": vault_integrity_hash,
+                        "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
                         "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
@@ -992,6 +1161,10 @@ def load_credentials() -> dict[str, object]:
                         "two_step_enabled": two_step_enabled,
                         "two_step_method": two_step_method,
                         "security_ai_sensitivity": security_ai_sensitivity,
+                        "security_ai_learning_enabled": security_ai_learning_enabled,
+                        "ai_learning_state": ai_learning_state,
+                        "vault_integrity_hash": vault_integrity_hash,
+                        "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
                         "two_step_custom_hash": two_step_custom_hash,
                         "backup_code_hashes": backup_code_hashes,
@@ -1037,6 +1210,18 @@ def save_credentials(credentials: dict[str, object]) -> bool:
         ),
         "security_ai_sensitivity": normalize_security_ai_sensitivity(
             credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+        ),
+        "security_ai_learning_enabled": to_bool(
+            credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
+            DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+        ),
+        "ai_learning_state": normalize_ai_learning_state(credentials.get("ai_learning_state", {})),
+        "vault_integrity_hash": normalize_hex_digest(credentials.get("vault_integrity_hash", "")),
+        "vault_integrity_last_verified": clamp_int(
+            credentials.get("vault_integrity_last_verified", 0),
+            0,
+            0,
+            2_147_483_647,
         ),
         "two_step_secret_encrypted": str(credentials.get("two_step_secret_encrypted", "")).strip(),
         "two_step_custom_hash": str(credentials.get("two_step_custom_hash", "")).strip(),
@@ -1128,6 +1313,11 @@ def save_vault(vault: dict[str, str], credentials: dict[str, object]) -> bool:
     try:
         with DATA_FILE.open("w", encoding="utf-8") as file:
             json.dump({"version": 1, "ciphertext": ciphertext}, file, indent=2)
+
+        integrity_hash = hashlib.sha256(DATA_FILE.read_bytes()).hexdigest()
+        credentials["vault_integrity_hash"] = integrity_hash
+        if not save_credentials(credentials):
+            print("Warning: Vault integrity metadata could not be updated in config.")
         return True
     except OSError as error:
         print(f"Could not save vault data to '{DATA_FILE}': {error}")
@@ -1261,13 +1451,15 @@ def show_menu() -> None:
     print("\nChoose an Option:")
     print("1) Add Data")
     print("2) List all keys")
-    print("3) Retrieve Data by Key")
-    print("4) Delete Data by Key")
-    print("5) Change Username/Password")
-    print("6) Security Settings")
-    print("7) Remove Data-bank Files (Data-bank files only)")
-    print("8) Security AI Report (requires heavy auth)")
-    print("9) Exit")
+    print("3) Search keys")
+    print("4) Retrieve Data by Key")
+    print("5) Delete Data by Key")
+    print("6) Change Username/Password")
+    print("7) Security Settings")
+    print("8) Remove Data-bank Files (Data-bank files only)")
+    print("9) Security AI Report (requires heavy auth)")
+    print("10) Data Integrity Check")
+    print("11) Exit")
 
 
 def view_security_ai_report(credentials: dict[str, object]) -> None:
@@ -1309,6 +1501,32 @@ def view_security_ai_report(credentials: dict[str, object]) -> None:
     print(f"- AI detections/alerts: {len(ai_alerts)}")
     print(f"- Blocked sensitive actions: {len(blocked_sensitive)}")
 
+    learning_enabled = to_bool(
+        credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
+        DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+    )
+    learning_state = normalize_ai_learning_state(credentials.get("ai_learning_state", {}))
+    learning_confidence = min(1.0, learning_state["sample_count"] / 8.0)
+
+    print("\nAdaptive learning status:")
+    print(f"- Enabled: {'Yes' if learning_enabled else 'No'}")
+    print(f"- Sample count: {int(learning_state['sample_count'])}")
+    print(f"- Learning confidence: {int(learning_confidence * 100)}%")
+    print(f"- Learned failed-login baseline (24h EWMA): {learning_state['failed_login_ewma']:.2f}")
+    print(f"- Learned vault-access baseline (24h EWMA): {learning_state['vault_access_ewma']:.2f}")
+    print(f"- Learned unique-key baseline (24h EWMA): {learning_state['unique_key_ewma']:.2f}")
+
+    print("\nActive Security AI thresholds:")
+    print(f"- Failed login threshold: {ACTIVE_SECURITY_FAILED_LOGIN_THRESHOLD}")
+    print(f"- Multi-user failed login threshold: {ACTIVE_SECURITY_FAILED_LOGIN_USER_THRESHOLD}")
+    print(
+        "- Single-user failed login spike threshold: "
+        f"{ACTIVE_SECURITY_SINGLE_USER_FAILED_LOGIN_SPIKE_THRESHOLD}"
+    )
+    print(f"- Vault burst threshold: {ACTIVE_SECURITY_VAULT_BURST_THRESHOLD}")
+    print(f"- Unique-key threshold: {ACTIVE_SECURITY_UNIQUE_KEY_THRESHOLD}")
+    print(f"- Alert confirmations required: {ACTIVE_SECURITY_VAULT_ALERT_CONFIRMATIONS}")
+
     if failed_logins:
         by_username: dict[str, int] = {}
         for event in failed_logins:
@@ -1338,6 +1556,198 @@ def view_security_ai_report(credentials: dict[str, object]) -> None:
         print("- None")
 
 
+def run_data_integrity_check(vault: dict[str, str], credentials: dict[str, object]) -> None:
+    """Validate vault data integrity and report any corruption or mismatch."""
+    print("\nData Integrity Check")
+
+    if not DATA_FILE.exists():
+        print("No vault file exists yet. Save data first, then run integrity check.")
+        return
+
+    expected_hash = normalize_hex_digest(credentials.get("vault_integrity_hash", ""))
+    try:
+        file_bytes = DATA_FILE.read_bytes()
+    except OSError as error:
+        print(f"Integrity check failed: could not read vault file ({error}).")
+        log_security_event("integrity_check_failed", {"reason": "vault_read_error"})
+        return
+
+    actual_hash = hashlib.sha256(file_bytes).hexdigest()
+    if expected_hash and not hmac.compare_digest(expected_hash, actual_hash):
+        print("Integrity check FAILED: vault file hash does not match the last trusted save.")
+        security_ai_alert(
+            "vault_integrity_hash_mismatch",
+            "Vault integrity hash mismatch detected. Possible tampering or corruption.",
+            cooldown_seconds=30,
+        )
+        log_security_event("integrity_check_failed", {"reason": "hash_mismatch"})
+        return
+
+    session_password = get_session_password()
+    if session_password is None:
+        print("Integrity check failed: no active authenticated session.")
+        log_security_event("integrity_check_failed", {"reason": "missing_session"})
+        return
+
+    try:
+        file_payload = json.loads(file_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("Integrity check FAILED: vault file is not valid JSON.")
+        log_security_event("integrity_check_failed", {"reason": "invalid_json"})
+        return
+
+    if not isinstance(file_payload, dict):
+        print("Integrity check FAILED: vault payload format is invalid.")
+        log_security_event("integrity_check_failed", {"reason": "invalid_payload"})
+        return
+
+    ciphertext = file_payload.get("ciphertext")
+    if not isinstance(ciphertext, str) or not ciphertext:
+        print("Integrity check FAILED: encrypted vault payload is missing.")
+        log_security_event("integrity_check_failed", {"reason": "missing_ciphertext"})
+        return
+
+    vault_salt = normalize_vault_salt(credentials.get("vault_salt", ""))
+    decrypted_payload = decrypt_text_with_password(ciphertext, session_password, vault_salt)
+    if decrypted_payload is None:
+        print("Integrity check FAILED: vault decryption/authentication failed.")
+        security_ai_alert(
+            "vault_integrity_decrypt_failed",
+            "Vault authentication failed during integrity check.",
+            cooldown_seconds=30,
+        )
+        log_security_event("integrity_check_failed", {"reason": "decrypt_failed"})
+        return
+
+    try:
+        parsed_vault = json.loads(decrypted_payload)
+    except json.JSONDecodeError:
+        print("Integrity check FAILED: decrypted data is not valid JSON.")
+        log_security_event("integrity_check_failed", {"reason": "decrypted_invalid_json"})
+        return
+
+    if not isinstance(parsed_vault, dict):
+        print("Integrity check FAILED: decrypted payload is not a key/value object.")
+        log_security_event("integrity_check_failed", {"reason": "decrypted_invalid_payload"})
+        return
+
+    normalized_loaded = {str(key): str(value) for key, value in parsed_vault.items()}
+    if normalized_loaded != vault:
+        print("Integrity warning: in-memory vault differs from file. Latest in-memory edits may be unsaved.")
+
+    credentials["vault_integrity_hash"] = actual_hash
+    credentials["vault_integrity_last_verified"] = int(time.time())
+    if save_credentials(credentials):
+        print("Integrity check PASSED: vault data and encryption auth tag are valid.")
+    else:
+        print("Integrity check passed, but metadata timestamp could not be saved.")
+
+    log_security_event(
+        "integrity_check_passed",
+        {"keys": len(normalized_loaded)},
+    )
+
+
+def run_startup_integrity_check(vault: dict[str, str], credentials: dict[str, object]) -> None:
+    """Run a periodic warning-only integrity check at startup without blocking access."""
+    if not DATA_FILE.exists():
+        return
+
+    expected_hash = normalize_hex_digest(credentials.get("vault_integrity_hash", ""))
+    if not expected_hash:
+        return
+
+    last_verified = clamp_int(
+        credentials.get("vault_integrity_last_verified", 0),
+        0,
+        0,
+        2_147_483_647,
+    )
+    now = int(time.time())
+    if last_verified > 0 and now - last_verified < STARTUP_INTEGRITY_CHECK_INTERVAL_SECONDS:
+        return
+
+    print("\nStartup integrity check: verifying vault integrity (warning-only).")
+
+    try:
+        file_bytes = DATA_FILE.read_bytes()
+    except OSError:
+        print("WARNING: Startup integrity check could not read the vault file.")
+        log_security_event("startup_integrity_check_failed", {"reason": "vault_read_error"})
+        return
+
+    actual_hash = hashlib.sha256(file_bytes).hexdigest()
+    if not hmac.compare_digest(expected_hash, actual_hash):
+        print("WARNING: Startup integrity check found a vault hash mismatch.")
+        print("Data-bank will continue in warning-only mode. Run manual Data Integrity Check for details.")
+        security_ai_alert(
+            "startup_vault_integrity_hash_mismatch",
+            "Startup integrity check detected a vault hash mismatch.",
+            cooldown_seconds=30,
+        )
+        log_security_event("startup_integrity_check_failed", {"reason": "hash_mismatch"})
+        return
+
+    try:
+        file_payload = json.loads(file_bytes.decode("utf-8"))
+    except (json.JSONDecodeError, UnicodeDecodeError):
+        print("WARNING: Startup integrity check found invalid vault JSON format.")
+        log_security_event("startup_integrity_check_failed", {"reason": "invalid_json"})
+        return
+
+    if not isinstance(file_payload, dict):
+        print("WARNING: Startup integrity check found invalid vault payload format.")
+        log_security_event("startup_integrity_check_failed", {"reason": "invalid_payload"})
+        return
+
+    ciphertext = file_payload.get("ciphertext")
+    if not isinstance(ciphertext, str) or not ciphertext:
+        print("WARNING: Startup integrity check found missing encrypted vault payload.")
+        log_security_event("startup_integrity_check_failed", {"reason": "missing_ciphertext"})
+        return
+
+    session_password = get_session_password()
+    if session_password is None:
+        print("WARNING: Startup integrity check could not verify decrypted payload (no active session).")
+        log_security_event("startup_integrity_check_failed", {"reason": "missing_session"})
+        return
+
+    vault_salt = normalize_vault_salt(credentials.get("vault_salt", ""))
+    decrypted_payload = decrypt_text_with_password(ciphertext, session_password, vault_salt)
+    if decrypted_payload is None:
+        print("WARNING: Startup integrity check could not authenticate encrypted vault payload.")
+        security_ai_alert(
+            "startup_vault_integrity_decrypt_failed",
+            "Startup integrity check failed vault authentication.",
+            cooldown_seconds=30,
+        )
+        log_security_event("startup_integrity_check_failed", {"reason": "decrypt_failed"})
+        return
+
+    try:
+        parsed_vault = json.loads(decrypted_payload)
+    except json.JSONDecodeError:
+        print("WARNING: Startup integrity check found invalid decrypted vault JSON.")
+        log_security_event("startup_integrity_check_failed", {"reason": "decrypted_invalid_json"})
+        return
+
+    if not isinstance(parsed_vault, dict):
+        print("WARNING: Startup integrity check found invalid decrypted payload shape.")
+        log_security_event("startup_integrity_check_failed", {"reason": "decrypted_invalid_payload"})
+        return
+
+    normalized_loaded = {str(key): str(value) for key, value in parsed_vault.items()}
+    if normalized_loaded != vault:
+        print("WARNING: Startup integrity check found in-memory and file vault mismatch (possible unsaved edits).")
+
+    credentials["vault_integrity_hash"] = actual_hash
+    credentials["vault_integrity_last_verified"] = now
+    if not save_credentials(credentials):
+        print("WARNING: Startup integrity check passed but could not update verification metadata.")
+
+    log_security_event("startup_integrity_check_passed", {"keys": len(normalized_loaded)})
+
+
 def add_data(vault: dict[str, str], credentials: dict[str, object]) -> None:
     key = prompt("Enter key: ")
     if key is None:
@@ -1365,6 +1775,33 @@ def list_data(vault: dict[str, str]) -> None:
 
     print("Stored keys:")
     for key in sorted(vault.keys()):
+        print(f"- {key}")
+
+
+def search_keys(vault: dict[str, str]) -> None:
+    query = prompt("Enter text to search in keys: ")
+    if query is None:
+        return
+
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        print("Search text cannot be empty.")
+        return
+
+    monitor_vault_access_activity("search_keys", normalized_query)
+
+    matches = [
+        key
+        for key in sorted(vault.keys())
+        if normalized_query in key.lower()
+    ]
+
+    if not matches:
+        print("No keys matched your search.")
+        return
+
+    print("Matching keys:")
+    for key in matches:
         print(f"- {key}")
 
 
@@ -1484,6 +1921,10 @@ def change_security_settings(credentials: dict[str, object]) -> None:
         credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
     )
     print(f"Current Security AI Sensitivity: {current_ai_sensitivity}")
+    print(
+        "Security AI Adaptive Learning: "
+        f"{'Enabled' if to_bool(credentials.get('security_ai_learning_enabled', DEFAULT_SECURITY_AI_LEARNING_ENABLED), DEFAULT_SECURITY_AI_LEARNING_ENABLED) else 'Disabled'}"
+    )
 
     new_attempts_input = prompt(
         f"New max login attempts ({MIN_LOGIN_ATTEMPTS}-{MAX_LOGIN_ATTEMPTS}, blank to keep): "
@@ -1509,12 +1950,17 @@ def change_security_settings(credentials: dict[str, object]) -> None:
     if sensitivity_choice is None:
         return
 
+    learning_choice = prompt("Security AI adaptive learning (enable/disable/keep): ")
+    if learning_choice is None:
+        return
+
     if (
         not new_attempts_input
         and not new_lockout_input
         and not two_step_choice
         and not regen_choice
         and not sensitivity_choice
+        and not learning_choice
     ):
         print("No changes made.")
         return
@@ -1584,6 +2030,20 @@ def change_security_settings(credentials: dict[str, object]) -> None:
     else:
         print("Unknown sensitivity choice. Keeping current sensitivity.")
 
+    learning_normalized = learning_choice.strip().lower()
+    if learning_normalized in {"enable", "on", "yes", "y"}:
+        credentials["security_ai_learning_enabled"] = True
+        print("Security AI adaptive learning enabled.")
+    elif learning_normalized in {"disable", "off", "no", "n"}:
+        credentials["security_ai_learning_enabled"] = False
+        print("Security AI adaptive learning disabled.")
+    elif learning_normalized in {"", "keep"}:
+        pass
+    else:
+        print("Unknown adaptive learning choice. Keeping current setting.")
+
+    apply_security_ai_profile(credentials)
+
     if save_credentials(credentials):
         print("Security settings updated.")
     else:
@@ -1614,6 +2074,10 @@ def show_security_policy(credentials: dict[str, object]) -> None:
     ai_sensitivity = normalize_security_ai_sensitivity(
         credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
     )
+    ai_learning = to_bool(
+        credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
+        DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+    )
     print(
         "Active security policy: "
         f"max_login_attempts={max_attempts}, "
@@ -1621,7 +2085,8 @@ def show_security_policy(credentials: dict[str, object]) -> None:
         f"two_step={two_step_status}, "
         f"two_step_method={two_step_method}, "
         f"backup_codes={backup_count}, "
-        f"security_ai_sensitivity={ai_sensitivity}"
+        f"security_ai_sensitivity={ai_sensitivity}, "
+        f"security_ai_learning={'enabled' if ai_learning else 'disabled'}"
     )
 
 
@@ -1758,9 +2223,7 @@ def main() -> None:
         print("Data-bank will create required files for your account and vault data.")
 
     credentials = load_credentials()
-    apply_security_ai_sensitivity(
-        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
-    )
+    apply_security_ai_profile(credentials)
     if first_run:
         print(f"Created login/security config file: {CONFIG_FILE}")
         print(
@@ -1790,10 +2253,11 @@ def main() -> None:
 
     vault = load_vault(credentials)
     print(f"You currently have {len(vault)} data entr{'y' if len(vault) == 1 else 'ies'} in the vault.")
+    run_startup_integrity_check(vault, credentials)
 
     while True:
         show_menu()
-        choice = prompt("Enter your choice (1-9): ")
+        choice = prompt("Enter your choice (1-11): ")
         if choice is None:
             print("Goodbye.")
             break
@@ -1803,24 +2267,28 @@ def main() -> None:
         elif choice == "2":
             list_data(vault)
         elif choice == "3":
-            retrieve_data(vault)
+            search_keys(vault)
         elif choice == "4":
-            delete_data(vault, credentials)
+            retrieve_data(vault)
         elif choice == "5":
-            change_credentials(credentials, vault)
+            delete_data(vault, credentials)
         elif choice == "6":
-            change_security_settings(credentials)
+            change_credentials(credentials, vault)
         elif choice == "7":
+            change_security_settings(credentials)
+        elif choice == "8":
             if remove_databank_files(credentials):
                 break
-        elif choice == "8":
-            view_security_ai_report(credentials)
         elif choice == "9":
+            view_security_ai_report(credentials)
+        elif choice == "10":
+            run_data_integrity_check(vault, credentials)
+        elif choice == "11":
             print("You are being securely logged out of Data Bank. Goodbye.")
             set_session_password(None)
             break
         else:
-            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, 8, or 9.")
+            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, or 11.")
 
 
 if __name__ == "__main__":

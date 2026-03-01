@@ -11,16 +11,22 @@ A simple Python data vault project for storing and retrieving key/value data. Th
 - New password updates require strength checks
 - Startup checks local Data-bank files and safely handles legacy file formats
 - Login lockout policy is configurable in `vault_config.json`
+- Data Integrity Check validates vault hash + encrypted payload integrity
+- Periodic startup integrity check runs in warning-only mode
 - Add data by key
 - List saved keys
+- Search keys by text
 - Retrieve data by key
 - Delete data by key
 - Persistent storage in `vault_data.json` (saved in a writable app folder)
 - Persistent login config in `vault_config.json` (saved in a writable app folder)
-- Change Username/Password from menu option 5
-- Change Security Settings from menu option 6
-- Remove Data-bank created files from menu option 7 (phrase + password required)
+- Change Username/Password from menu option 6
+- Change Security Settings from menu option 7
+- Remove Data-bank created files from menu option 8 (phrase + password required)
+- Run Data Integrity Check from menu option 10
 - Optional authenticator-app two-step verification (TOTP)
+- Adaptive Security AI learning can tune thresholds from recent activity
+- Security AI Report now includes learning baselines, confidence, and active thresholds
 
 ## Run
 From the project folder:
@@ -52,7 +58,7 @@ python3 health_check.py
 The app stores data in your home folder under `.data_bank`.
 
 Safe cleanup option:
-- Menu option 7 removes only Data-bank-created files (`vault_data.json` and `vault_config.json`) from the Data-bank storage folder.
+- Menu option 8 removes only Data-bank-created files (`vault_data.json` and `vault_config.json`) from the Data-bank storage folder.
 - It does not delete unrelated computer files.
 - It requires typing an exact confirmation phrase and your current password.
 
@@ -65,16 +71,19 @@ Note: `vault_config.json` now stores `password_hash` instead of `password` for s
 Optional security settings in `vault_config.json`:
 - `max_login_attempts` (default `3`, allowed range `1-10`)
 - `lockout_seconds` (default `30`, allowed range `0-300`)
+- `security_ai_learning_enabled` (default `true`; enables adaptive threshold tuning)
 - `two_step_enabled` (default `false`)
 - `two_step_method` (`custom_code` or `totp`)
 - `two_step_secret_encrypted` (encrypted TOTP secret; plaintext is not stored)
 - `two_step_custom_hash` (hashed custom code when using `custom_code` method)
 - `backup_code_hashes` (hashed one-time recovery codes; plaintext codes are not stored)
 - `vault_salt` (random salt used with password-derived vault encryption key)
+- `vault_integrity_hash` (last trusted SHA-256 hash of the encrypted vault file)
 
 Startup file check behavior:
 - On launch, Data-bank validates local file state.
 - If legacy vault format is detected, Data-bank reports it and upgrades it automatically after successful login.
+- On startup after login, Data-bank runs a periodic integrity verification (about every 6 hours) and warns on issues without blocking access.
 
 Two-step verification notes:
 - After password login, users can opt in to 2-step setup.
