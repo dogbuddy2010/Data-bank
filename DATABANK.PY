@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import ast
 import base64
 from collections import deque
 import getpass
@@ -8,6 +9,7 @@ import hmac
 import json
 import os
 from pathlib import Path
+import re
 import shutil
 import sys
 import time
@@ -138,6 +140,32 @@ SESSION_VAULT_KEY_EVENTS: deque[tuple[float, str]] = deque()
 SECURITY_ALERT_COOLDOWNS: dict[str, float] = {}
 SESSION_VAULT_BURST_COUNT = 0
 SESSION_VAULT_KEY_SPIKE_COUNT = 0
+PROGRAM_HELP_INDEX: list[dict[str, object]] = []
+
+AI_HELP_STOP_WORDS = {
+    "the",
+    "a",
+    "an",
+    "and",
+    "or",
+    "to",
+    "for",
+    "of",
+    "in",
+    "on",
+    "is",
+    "it",
+    "how",
+    "what",
+    "can",
+    "i",
+    "do",
+    "my",
+    "with",
+    "from",
+    "that",
+    "this",
+}
 
 
 def normalize_security_ai_sensitivity(value: object) -> str:
@@ -249,6 +277,79 @@ def learn_from_ai_help_question(credentials: dict[str, object], question: str) -
     learning_state["last_question_at"] = float(int(time.time()))
 
     credentials["ai_help_learning_state"] = learning_state
+
+
+def tokenize_ai_help_text(text: str) -> set[str]:
+    tokens = {
+        token
+        for token in re.split(r"[^a-zA-Z0-9_]+", text.lower())
+        if len(token) >= 2 and token not in AI_HELP_STOP_WORDS
+    }
+    return tokens
+
+
+def build_program_help_index() -> None:
+    global PROGRAM_HELP_INDEX
+
+    source_path = Path(__file__)
+    try:
+        source_text = source_path.read_text(encoding="utf-8")
+        tree = ast.parse(source_text)
+    except (OSError, SyntaxError, UnicodeDecodeError):
+        PROGRAM_HELP_INDEX = []
+        return
+
+    index: list[dict[str, object]] = []
+    for node in tree.body:
+        if not isinstance(node, ast.FunctionDef):
+            continue
+
+        name = node.name
+        doc = ast.get_docstring(node) or ""
+        summary = doc.splitlines()[0].strip() if doc else ""
+        if not summary:
+            summary = f"Function '{name}' in Data-bank workflow."
+
+        searchable = f"{name} {name.replace('_', ' ')} {summary}"
+        tokens = tokenize_ai_help_text(searchable)
+        if not tokens:
+            continue
+
+        index.append(
+            {
+                "name": name,
+                "summary": summary,
+                "tokens": tokens,
+            }
+        )
+
+    PROGRAM_HELP_INDEX = index
+
+
+def find_program_help_matches(question: str, max_results: int = 3) -> list[dict[str, object]]:
+    if not PROGRAM_HELP_INDEX:
+        build_program_help_index()
+
+    question_tokens = tokenize_ai_help_text(question)
+    if not question_tokens:
+        return []
+
+    scored: list[tuple[int, dict[str, object]]] = []
+    for entry in PROGRAM_HELP_INDEX:
+        entry_tokens = entry.get("tokens")
+        if not isinstance(entry_tokens, set):
+            continue
+
+        overlap = len(question_tokens & entry_tokens)
+        if overlap <= 0:
+            continue
+
+        name = str(entry.get("name", "")).lower()
+        name_bonus = 2 if name and name in question.lower() else 0
+        scored.append((overlap + name_bonus, entry))
+
+    scored.sort(key=lambda item: item[0], reverse=True)
+    return [entry for _, entry in scored[:max_results]]
 
 
 def apply_security_ai_sensitivity(sensitivity: object) -> None:
@@ -2388,6 +2489,19 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
             f"Based on your history, you often ask about {topic_labels[top_topic]}."
         )
 
+    program_matches = find_program_help_matches(question)
+    if program_matches:
+        previews: list[str] = []
+        for match in program_matches[:2]:
+            name = str(match.get("name", "")).strip()
+            summary = str(match.get("summary", "")).strip()
+            previews.append(f"{name}: {summary}")
+        return (
+            "I matched your question to these program areas: "
+            + " | ".join(previews)
+            + ". Ask a follow-up and I can narrow it down."
+        )
+
     return (
         "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
         "Try asking one of those topics directly."
@@ -2395,9 +2509,37 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
 
 
 def ai_help_chat(credentials: dict[str, object]) -> None:
+    def wants_to_exit_help_chat(text: str) -> bool:
+        lowered = text.strip().lower()
+        if not lowered:
+            return False
+
+        direct_commands = {
+            "back",
+            "exit",
+            "quit",
+            "stop",
+            "menu",
+            "close",
+            "bye",
+        }
+        if lowered in direct_commands:
+            return True
+
+        exit_phrases = (
+            "go back",
+            "back to menu",
+            "exit chat",
+            "quit chat",
+            "stop chat",
+            "leave chat",
+            "end chat",
+        )
+        return any(phrase in lowered for phrase in exit_phrases)
+
     print("\nAI Help")
     print("Ask simple Data-bank usage/security questions.")
-    print("Type 'back' to return to the main menu.")
+    print("Type 'back' (or 'exit', 'quit', 'stop', 'bye') to return to the main menu.")
 
     while True:
         user_question = prompt("AI Help > ")
@@ -2405,8 +2547,7 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
             print("Leaving AI Help.")
             return
 
-        lowered = user_question.strip().lower()
-        if lowered in {"back", "exit", "quit"}:
+        if wants_to_exit_help_chat(user_question):
             print("Leaving AI Help.")
             return
 
@@ -2417,6 +2558,7 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
 def main() -> None:
     show_storage_info()
+    build_program_help_index()
     first_run = not CONFIG_FILE.exists()
     if first_run:
         print("First-time setup detected for Data-bank.")
