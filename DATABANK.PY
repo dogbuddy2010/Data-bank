@@ -331,6 +331,51 @@ def normalize_ai_help_learning_state(value: object) -> dict[str, object]:
     return normalized
 
 
+def normalize_ai_help_chat_state(value: object) -> dict[str, object]:
+    normalized: dict[str, object] = {
+        "pending_question_type": "",
+        "pending_question_text": "",
+        "pending_set_at": 0.0,
+    }
+    allowed_question_types = {
+        "choose_goal",
+        "two_step_method_choice",
+        "enable_two_step_confirm",
+    }
+
+    if not isinstance(value, dict):
+        return normalized
+
+    question_type = str(value.get("pending_question_type", "")).strip().lower()
+    normalized["pending_question_type"] = (
+        question_type if question_type in allowed_question_types else ""
+    )
+    normalized["pending_question_text"] = str(value.get("pending_question_text", "")).strip()[:240]
+
+    try:
+        parsed_time = float(value.get("pending_set_at", 0.0))
+    except (TypeError, ValueError):
+        parsed_time = 0.0
+    normalized["pending_set_at"] = max(0.0, parsed_time)
+    return normalized
+
+
+def set_ai_help_pending_question(
+    credentials: dict[str, object],
+    question_type: str,
+    question_text: str,
+) -> None:
+    state = normalize_ai_help_chat_state(credentials.get("ai_help_chat_state", {}))
+    state["pending_question_type"] = question_type
+    state["pending_question_text"] = question_text.strip()[:240]
+    state["pending_set_at"] = float(int(time.time()))
+    credentials["ai_help_chat_state"] = state
+
+
+def clear_ai_help_pending_question(credentials: dict[str, object]) -> None:
+    credentials["ai_help_chat_state"] = normalize_ai_help_chat_state({})
+
+
 def classify_ai_help_topic(query: str) -> str:
     topic, _ = infer_ai_help_topic(query)
     return topic
@@ -975,6 +1020,7 @@ def default_credentials() -> dict[str, object]:
         "security_ai_learning_enabled": DEFAULT_SECURITY_AI_LEARNING_ENABLED,
         "ai_learning_state": normalize_ai_learning_state({}),
         "ai_help_learning_state": normalize_ai_help_learning_state({}),
+        "ai_help_chat_state": normalize_ai_help_chat_state({}),
         "vault_integrity_hash": "",
         "vault_integrity_last_verified": 0,
         "two_step_secret_encrypted": "",
@@ -1421,6 +1467,9 @@ def load_credentials() -> dict[str, object]:
                 ai_help_learning_state = normalize_ai_help_learning_state(
                     data.get("ai_help_learning_state", {})
                 )
+                ai_help_chat_state = normalize_ai_help_chat_state(
+                    data.get("ai_help_chat_state", {})
+                )
                 vault_salt = normalize_vault_salt(data.get("vault_salt", ""))
                 vault_integrity_hash = normalize_hex_digest(
                     data.get("vault_integrity_hash", "")
@@ -1451,6 +1500,7 @@ def load_credentials() -> dict[str, object]:
                         "security_ai_learning_enabled": security_ai_learning_enabled,
                         "ai_learning_state": ai_learning_state,
                         "ai_help_learning_state": ai_help_learning_state,
+                        "ai_help_chat_state": ai_help_chat_state,
                         "vault_integrity_hash": vault_integrity_hash,
                         "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
@@ -1476,6 +1526,7 @@ def load_credentials() -> dict[str, object]:
                         "security_ai_learning_enabled": security_ai_learning_enabled,
                         "ai_learning_state": ai_learning_state,
                         "ai_help_learning_state": ai_help_learning_state,
+                        "ai_help_chat_state": ai_help_chat_state,
                         "vault_integrity_hash": vault_integrity_hash,
                         "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
@@ -1531,6 +1582,9 @@ def save_credentials(credentials: dict[str, object]) -> bool:
         "ai_learning_state": normalize_ai_learning_state(credentials.get("ai_learning_state", {})),
         "ai_help_learning_state": normalize_ai_help_learning_state(
             credentials.get("ai_help_learning_state", {})
+        ),
+        "ai_help_chat_state": normalize_ai_help_chat_state(
+            credentials.get("ai_help_chat_state", {})
         ),
         "vault_integrity_hash": normalize_hex_digest(credentials.get("vault_integrity_hash", "")),
         "vault_integrity_last_verified": clamp_int(
@@ -1764,7 +1818,7 @@ def login(credentials: dict[str, object]) -> bool:
 
 
 def show_menu() -> None:
-    print("\nChoose an Option:")
+    print("\nChoose an option:")
     print("1) Add Data")
     print("2) List all keys")
     print("3) Search keys")
@@ -1773,7 +1827,7 @@ def show_menu() -> None:
     print("6) Change Username/Password")
     print("7) Security Settings")
     print("8) Remove Data-bank Files (Data-bank files only)")
-    print("9) Security Analytics Report (requires heavy auth)")
+    print("9) Security Analytics Report (requires strong verification)")
     print("10) Data Integrity Check")
     print("11) Support Assistant")
     print("12) Exit")
@@ -1996,7 +2050,7 @@ def run_startup_integrity_check(vault: dict[str, str], credentials: dict[str, ob
     actual_hash = hashlib.sha256(file_bytes).hexdigest()
     if not hmac.compare_digest(expected_hash, actual_hash):
         print("WARNING: Startup integrity check found a vault hash mismatch.")
-        print("Data-bank will continue in warning-only mode. Run manual Data Integrity Check for details.")
+        print("Data-bank will continue in warning-only mode. Run a manual Data Integrity Check for details.")
         security_ai_alert(
             "startup_vault_integrity_hash_mismatch",
             "Startup integrity check detected a vault hash mismatch.",
@@ -2546,6 +2600,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     help_learning_state = normalize_ai_help_learning_state(
         credentials.get("ai_help_learning_state", {})
     )
+    chat_state = normalize_ai_help_chat_state(credentials.get("ai_help_chat_state", {}))
     conversation_intent = infer_ai_help_conversation_intent(query)
     current_topic, topic_confidence = infer_ai_help_topic(query)
 
@@ -2564,41 +2619,151 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
         key=lambda key: float(help_learning_state.get(f"topic_{key}", 0.0)),
     )
     total_questions = int(float(help_learning_state.get("total_questions", 0.0)))
+    pending_question_type = str(chat_state.get("pending_question_type", "")).strip().lower()
+    pending_set_at = float(chat_state.get("pending_set_at", 0.0))
+
+    if pending_question_type and (time.time() - pending_set_at) > 600:
+        clear_ai_help_pending_question(credentials)
+        pending_question_type = ""
+
+    def parse_menu_option_reference(text: str) -> Optional[int]:
+        stripped = text.strip().lower()
+        if not stripped:
+            return None
+
+        if stripped.isdigit():
+            value = int(stripped)
+            return value if 1 <= value <= 12 else None
+
+        match = re.search(r"\boption\s*(\d{1,2})\b", stripped)
+        if match:
+            value = int(match.group(1))
+            return value if 1 <= value <= 12 else None
+        return None
+
+    def is_affirmative(text: str) -> bool:
+        tokens = tokenize_ai_help_text(text)
+        return bool(tokens & {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "do", "enable"})
+
+    def is_negative(text: str) -> bool:
+        tokens = tokenize_ai_help_text(text)
+        return bool(tokens & {"no", "n", "nope", "nah", "later", "not"})
+
+    menu_option_help = {
+        1: "Option 1 adds new vault data by key.",
+        2: "Option 2 lists all stored keys.",
+        3: "Option 3 searches keys by text.",
+        4: "Option 4 retrieves the value for a key.",
+        5: "Option 5 deletes data by key.",
+        6: "Option 6 changes username/password.",
+        7: "Option 7 opens Security Settings.",
+        8: "Option 8 removes only Data-bank-created files after strict confirmation.",
+        9: "Option 9 opens Security Analytics Report with stronger verification.",
+        10: "Option 10 runs Data Integrity Check.",
+        11: "Option 11 opens Support Assistant.",
+        12: "Option 12 securely logs you out and exits.",
+    }
 
     if not query:
-        return "Ask a short question like: 'how do I enable two-step?' or 'how do I recover access?'."
+        return "Ask a quick question like 'How do I enable two-step?' or 'How do I recover access?'."
+
+    if pending_question_type == "choose_goal":
+        if is_affirmative(query) or is_negative(query):
+            return (
+                "Tell me your goal in one line. You can reply with a menu option number (1-12) "
+                "or something like 'enable two-step', 'list keys', or 'retrieve key'."
+            )
+        if topic_confidence >= 0.2:
+            clear_ai_help_pending_question(credentials)
+
+    if pending_question_type == "two_step_method_choice":
+        if any(word in query for word in ("custom", "no app", "without app", "pin", "manual")):
+            clear_ai_help_pending_question(credentials)
+            return (
+                "Great choice. Open Security Settings (option 7), enable two-step, then choose custom code. "
+                "After that, create your own second-factor code."
+            )
+        if any(word in query for word in ("totp", "app", "authenticator", "google", "microsoft")):
+            clear_ai_help_pending_question(credentials)
+            return (
+                "Great choice. Open Security Settings (option 7), enable two-step, then choose authenticator app mode. "
+                "Enter the app-generated code to finish setup."
+            )
+        return "Reply with either 'custom code' or 'authenticator app' and I’ll give exact steps."
+
+    if pending_question_type == "enable_two_step_confirm":
+        if is_affirmative(query):
+            clear_ai_help_pending_question(credentials)
+            return "Open Security Settings (option 7), then enable two-step verification and complete setup."
+        if is_negative(query):
+            clear_ai_help_pending_question(credentials)
+            return "No problem. You can keep using options 1-5 and enable two-step later from option 7."
+        return "Please reply with 'yes' or 'no' so I can guide the next step."
+
+    menu_option = parse_menu_option_reference(query)
+    if menu_option is not None:
+        clear_ai_help_pending_question(credentials)
+        return menu_option_help.get(menu_option, "That menu option is not recognized.")
 
     if conversation_intent == "thanks":
-        return "You're welcome. If you want, I can guide you step-by-step—start by saying what you're trying to do right now."
+        set_ai_help_pending_question(
+            credentials,
+            "choose_goal",
+            "What are you trying to do right now?",
+        )
+        return "You’re welcome. If you want step-by-step help, tell me what you’re trying to do right now."
 
     if conversation_intent == "greeting":
-        return "Hi. I can help with login, security settings, two-step setup, backup codes, or data operations. What do you want to do first?"
+        set_ai_help_pending_question(
+            credentials,
+            "choose_goal",
+            "What do you want to do first?",
+        )
+        return "Hi. I can help with login, security settings, two-step setup, backup codes, and vault actions. What do you want to do first?"
 
     if conversation_intent == "goodbye":
+        clear_ai_help_pending_question(credentials)
         return "No problem. Type 'back' any time to return to the main menu."
 
     if conversation_intent == "confused":
+        set_ai_help_pending_question(
+            credentials,
+            "choose_goal",
+            "Tell me your goal.",
+        )
         return (
             "No worries—quick start: 1) Add Data (option 1), 2) List/Search keys (options 2-3), "
             "3) Retrieve/Delete (options 4-5), 4) Security Settings (option 7). "
-            "Tell me your goal and I’ll suggest the exact next option."
+            "Tell me your goal and I’ll point you to the exact next option."
         )
 
     if current_topic == "two_step" and topic_confidence >= 0.2:
+        clear_ai_help_pending_question(credentials)
         if not two_step_enabled:
+            set_ai_help_pending_question(
+                credentials,
+                "two_step_method_choice",
+                "Do you want custom code or authenticator app mode?",
+            )
             return (
-                "Two-step is currently disabled. Open Security Settings (option 7), choose enable, and complete setup. "
-                "You can pick custom code (no app required) or authenticator app mode."
+                "Two-step is currently off. Open Security Settings (option 7), choose enable, and complete setup. "
+                "You can choose custom code (no app needed) or authenticator app mode. Which do you want?"
             )
         return (
-            "Two-step is currently enabled. "
+            "Two-step is currently on. "
             f"Active method: {two_step_method}. "
             "Login requires username/password plus your second factor."
         )
 
     if current_topic == "backup" and topic_confidence >= 0.2:
+        clear_ai_help_pending_question(credentials)
         if not two_step_enabled:
-            return "Backup recovery codes are available only after two-step is enabled."
+            set_ai_help_pending_question(
+                credentials,
+                "enable_two_step_confirm",
+                "Do you want to enable two-step now?",
+            )
+            return "Backup recovery codes are available only after two-step is enabled. Do you want to turn two-step on now?"
         return (
             "Backup recovery codes are generated when two-step is enabled and shown once. "
             f"You currently have {backup_codes_left} code(s) remaining. "
@@ -2606,31 +2771,45 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
         )
 
     if current_topic == "integrity" and topic_confidence >= 0.2:
+        clear_ai_help_pending_question(credentials)
         return (
             "Use Data Integrity Check (option 10) to verify vault integrity. "
-            "Startup also runs periodic warning-only integrity checks."
+            "Startup also runs periodic warning-only checks in the background."
         )
 
     if current_topic == "security_ai" and topic_confidence >= 0.2:
+        clear_ai_help_pending_question(credentials)
         return (
-            "Security AI monitors failed logins and unusual vault access behavior. "
+            "Security AI monitors failed logins and unusual vault access patterns. "
             f"Current sensitivity is '{ai_sensitivity}' and adaptive learning is {'enabled' if ai_learning_enabled else 'disabled'}. "
             "Use Security Analytics Report (option 9) to review alerts and active thresholds."
         )
 
     if current_topic == "cleanup" and topic_confidence >= 0.2:
+        clear_ai_help_pending_question(credentials)
         return (
-            "Use Remove Data-bank Files (option 8). It only targets Data-bank files and requires confirmation phrase plus password."
+            "Use Remove Data-bank Files (option 8). It only targets Data-bank files and requires a confirmation phrase plus password."
         )
 
     if current_topic == "credentials" and topic_confidence >= 0.2:
-        return "Use Change Username/Password (option 6). Password updates require strength checks."
+        clear_ai_help_pending_question(credentials)
+        return "Use Change Username/Password (option 6). New passwords must pass strength checks."
 
     if current_topic == "vault_ops" and topic_confidence >= 0.2:
-        return "Use options 1-5 for data operations: add, list, search, retrieve, and delete vault entries."
+        clear_ai_help_pending_question(credentials)
+        if "list" in query:
+            return "To list all keys, use option 2."
+        if "search" in query:
+            return "To search keys by text, use option 3."
+        if "retrieve" in query or "get" in query:
+            return "To retrieve data by key, use option 4."
+        if "delete" in query or "remove" in query:
+            return "To delete data by key, use option 5."
+        return "Use options 1-5 for vault operations: add, list, search, retrieve, and delete entries."
 
     program_matches = find_program_help_matches(question)
     if program_matches:
+        clear_ai_help_pending_question(credentials)
         previews: list[str] = []
         for match in program_matches[:2]:
             name = str(match.get("name", "")).strip()
@@ -2639,34 +2818,56 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
         return (
             "I matched your question to these program areas: "
             + " | ".join(previews)
-            + ". Ask a follow-up and I can narrow it down."
+            + ". Ask a follow-up and I can narrow this down."
         )
 
     if total_questions >= 3 and top_topic in topic_labels and top_topic != "general":
+        set_ai_help_pending_question(
+            credentials,
+            "choose_goal",
+            "What do you want to do next?",
+        )
         return (
             "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
-            f"Based on your history, you often ask about {topic_labels[top_topic]}."
+            f"Based on your history, you often ask about {topic_labels[top_topic]}. What would you like to do next?"
         )
 
+    set_ai_help_pending_question(
+        credentials,
+        "choose_goal",
+        "What do you want to do now?",
+    )
     return (
         "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
-        "Try asking one of those topics directly."
+        "Tell me your goal and I’ll map it to the right menu option."
     )
 
 
-def support_assistant_next_step(topic: str, confidence: float) -> str:
+def support_assistant_next_step(topic: str, confidence: float, user_question: str) -> str:
+    normalized = user_question.strip().lower()
+    if normalized.isdigit():
+        value = int(normalized)
+        if 1 <= value <= 12:
+            return f"Next step: use option {value} from the main menu."
+
+    option_match = re.search(r"\boption\s*(\d{1,2})\b", normalized)
+    if option_match:
+        value = int(option_match.group(1))
+        if 1 <= value <= 12:
+            return f"Next step: use option {value} from the main menu."
+
     if confidence < 0.2:
-        return "Suggested next step: option 2 (List all keys) if you want to explore current data."
+        return "Next step: try option 2 (List all keys) to see what’s currently stored."
 
     suggestions = {
-        "two_step": "Suggested next step: option 7 (Security Settings) to enable or manage two-step verification.",
-        "backup": "Suggested next step: option 7 (Security Settings) to regenerate or review backup recovery behavior.",
-        "integrity": "Suggested next step: option 10 (Data Integrity Check).",
-        "security_ai": "Suggested next step: option 9 (Security Analytics Report).",
-        "cleanup": "Suggested next step: option 8 (Remove Data-bank Files) if you want safe cleanup.",
-        "credentials": "Suggested next step: option 6 (Change Username/Password).",
-        "vault_ops": "Suggested next step: option 1 to add data, or option 3 to search existing keys.",
-        "general": "Suggested next step: option 2 (List all keys) or option 1 (Add Data).",
+        "two_step": "Next step: open option 7 (Security Settings) to enable or manage two-step verification.",
+        "backup": "Next step: open option 7 (Security Settings) to regenerate or review backup recovery codes.",
+        "integrity": "Next step: run option 10 (Data Integrity Check).",
+        "security_ai": "Next step: open option 9 (Security Analytics Report).",
+        "cleanup": "Next step: use option 8 (Remove Data-bank Files) only if you want cleanup.",
+        "credentials": "Next step: use option 6 (Change Username/Password).",
+        "vault_ops": "Next step: use option 1 to add data, or option 3 to search keys.",
+        "general": "Next step: use option 2 (List all keys) or option 1 (Add Data).",
     }
     return suggestions.get(topic, suggestions["general"])
 
@@ -2701,7 +2902,7 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
         return any(phrase in lowered for phrase in exit_phrases)
 
     print("\nSupport Assistant")
-    print("Ask simple Data-bank usage/security questions.")
+    print("Ask simple Data-bank usage and security questions.")
     print("Type 'back' (or 'exit', 'quit', 'stop', 'bye') to return to the main menu.")
 
     while True:
@@ -2715,10 +2916,10 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
             return
 
         learn_from_ai_help_question(credentials, user_question)
-        save_credentials(credentials)
         response = ai_help_response(user_question, credentials)
         inferred_topic, inferred_confidence = infer_ai_help_topic(user_question)
-        next_step = support_assistant_next_step(inferred_topic, inferred_confidence)
+        next_step = support_assistant_next_step(inferred_topic, inferred_confidence, user_question)
+        save_credentials(credentials)
         print(f"Support Assistant: {response}")
         print(next_step)
 
@@ -2796,7 +2997,7 @@ def main() -> None:
         elif choice == "11":
             ai_help_chat(credentials)
         elif choice == "12":
-            print("You are being securely logged out of Data Bank. Goodbye.")
+            print("You are being securely logged out of Data-bank. Goodbye.")
             set_session_password(None)
             break
         else:
