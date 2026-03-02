@@ -24,13 +24,14 @@ A simple Python data vault project for storing and retrieving key/value data. Th
 - Change Security Settings from menu option 7
 - Remove Data-bank created files from menu option 8 (phrase + password required)
 - Run Data Integrity Check from menu option 10
-- Built-in AI Help chat for simple usage/security questions from menu option 11
-- AI Help adapts to each user’s question history and personalizes guidance over time
-- AI Help also scans the program’s own functions/docstrings at startup to answer broader free-form questions
-- AI Help uses weighted natural-language intent scoring (not only exact command phrases)
+- Built-in Support Assistant chat for usage/security questions from menu option 11
+- Support Assistant adapts to each user’s question history and personalizes guidance over time
+- Support Assistant scans the program’s own functions/docstrings at startup to answer broader free-form questions
+- Support Assistant uses weighted natural-language intent scoring (not only exact command phrases)
+- Support Assistant provides guided “Suggested next step” menu recommendations after each response
 - Optional authenticator-app two-step verification (TOTP)
 - Adaptive Security AI learning can tune thresholds from recent activity
-- Security AI Report now includes learning baselines, confidence, and active thresholds
+- Security Analytics Report now includes learning baselines, confidence, and active thresholds
 
 ## Run
 From the project folder:

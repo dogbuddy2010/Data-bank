@@ -1773,21 +1773,21 @@ def show_menu() -> None:
     print("6) Change Username/Password")
     print("7) Security Settings")
     print("8) Remove Data-bank Files (Data-bank files only)")
-    print("9) Security AI Report (requires heavy auth)")
+    print("9) Security Analytics Report (requires heavy auth)")
     print("10) Data Integrity Check")
-    print("11) AI Help (simple questions)")
+    print("11) Support Assistant")
     print("12) Exit")
 
 
-def view_security_ai_report(credentials: dict[str, object]) -> None:
+def view_security_analytics_report(credentials: dict[str, object]) -> None:
     """Show a protected summary of Security AI detections and risk events."""
-    print("\nSecurity AI Report")
+    print("\nSecurity Analytics Report")
     print("This report requires password confirmation")
     print("and 2-step verification if it is enabled.")
 
     if not authorize_sensitive_security_action(credentials):
         monitor_sensitive_action_failure("security_report_access_denied")
-        print("Access denied: unable to verify identity for Security AI report.")
+        print("Access denied: unable to verify identity for Security Analytics Report.")
         return
 
     events = load_security_events(1000)
@@ -2615,7 +2615,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
         return (
             "Security AI monitors failed logins and unusual vault access behavior. "
             f"Current sensitivity is '{ai_sensitivity}' and adaptive learning is {'enabled' if ai_learning_enabled else 'disabled'}. "
-            "Use Security AI Report (option 9) to review alerts and active thresholds."
+            "Use Security Analytics Report (option 9) to review alerts and active thresholds."
         )
 
     if current_topic == "cleanup" and topic_confidence >= 0.2:
@@ -2654,6 +2654,23 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     )
 
 
+def support_assistant_next_step(topic: str, confidence: float) -> str:
+    if confidence < 0.2:
+        return "Suggested next step: option 2 (List all keys) if you want to explore current data."
+
+    suggestions = {
+        "two_step": "Suggested next step: option 7 (Security Settings) to enable or manage two-step verification.",
+        "backup": "Suggested next step: option 7 (Security Settings) to regenerate or review backup recovery behavior.",
+        "integrity": "Suggested next step: option 10 (Data Integrity Check).",
+        "security_ai": "Suggested next step: option 9 (Security Analytics Report).",
+        "cleanup": "Suggested next step: option 8 (Remove Data-bank Files) if you want safe cleanup.",
+        "credentials": "Suggested next step: option 6 (Change Username/Password).",
+        "vault_ops": "Suggested next step: option 1 to add data, or option 3 to search existing keys.",
+        "general": "Suggested next step: option 2 (List all keys) or option 1 (Add Data).",
+    }
+    return suggestions.get(topic, suggestions["general"])
+
+
 def ai_help_chat(credentials: dict[str, object]) -> None:
     def wants_to_exit_help_chat(text: str) -> bool:
         lowered = text.strip().lower()
@@ -2683,23 +2700,27 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
         )
         return any(phrase in lowered for phrase in exit_phrases)
 
-    print("\nAI Help")
+    print("\nSupport Assistant")
     print("Ask simple Data-bank usage/security questions.")
     print("Type 'back' (or 'exit', 'quit', 'stop', 'bye') to return to the main menu.")
 
     while True:
-        user_question = prompt("AI Help > ")
+        user_question = prompt("Support Assistant > ")
         if user_question is None:
-            print("Leaving AI Help.")
+            print("Leaving Support Assistant.")
             return
 
         if wants_to_exit_help_chat(user_question):
-            print("Leaving AI Help.")
+            print("Leaving Support Assistant.")
             return
 
         learn_from_ai_help_question(credentials, user_question)
         save_credentials(credentials)
-        print(f"AI Help: {ai_help_response(user_question, credentials)}")
+        response = ai_help_response(user_question, credentials)
+        inferred_topic, inferred_confidence = infer_ai_help_topic(user_question)
+        next_step = support_assistant_next_step(inferred_topic, inferred_confidence)
+        print(f"Support Assistant: {response}")
+        print(next_step)
 
 
 def main() -> None:
@@ -2769,7 +2790,7 @@ def main() -> None:
             if remove_databank_files(credentials):
                 break
         elif choice == "9":
-            view_security_ai_report(credentials)
+            view_security_analytics_report(credentials)
         elif choice == "10":
             run_data_integrity_check(vault, credentials)
         elif choice == "11":
