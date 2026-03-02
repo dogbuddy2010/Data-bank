@@ -167,6 +167,77 @@ AI_HELP_STOP_WORDS = {
     "this",
 }
 
+AI_HELP_TOPIC_KEYWORDS: dict[str, set[str]] = {
+    "two_step": {
+        "two",
+        "step",
+        "2fa",
+        "totp",
+        "authenticator",
+        "verification",
+        "second",
+        "factor",
+        "code",
+    },
+    "backup": {
+        "backup",
+        "recovery",
+        "codes",
+        "recover",
+        "fallback",
+        "one-time",
+        "regenerate",
+    },
+    "integrity": {
+        "integrity",
+        "tamper",
+        "hash",
+        "checksum",
+        "verify",
+        "corrupt",
+        "corruption",
+    },
+    "security_ai": {
+        "security",
+        "ai",
+        "alert",
+        "alerts",
+        "anomaly",
+        "threshold",
+        "learning",
+        "sensitivity",
+    },
+    "cleanup": {
+        "remove",
+        "delete",
+        "cleanup",
+        "wipe",
+        "erase",
+        "files",
+    },
+    "credentials": {
+        "password",
+        "username",
+        "credential",
+        "credentials",
+        "login",
+        "change",
+        "update",
+    },
+    "vault_ops": {
+        "vault",
+        "data",
+        "save",
+        "add",
+        "list",
+        "search",
+        "retrieve",
+        "delete",
+        "key",
+        "keys",
+    },
+}
+
 
 def normalize_security_ai_sensitivity(value: object) -> str:
     candidate = str(value).strip().lower()
@@ -243,21 +314,39 @@ def normalize_ai_help_learning_state(value: object) -> dict[str, object]:
 
 
 def classify_ai_help_topic(query: str) -> str:
-    if "two-step" in query or "2-step" in query or "2fa" in query or "totp" in query:
-        return "two_step"
-    if "backup" in query or "recovery" in query:
-        return "backup"
-    if "integrity" in query or "tamper" in query or "hash" in query:
-        return "integrity"
-    if "security ai" in query or "alerts" in query or "anomaly" in query:
-        return "security_ai"
-    if "remove" in query or "delete file" in query or "cleanup" in query:
-        return "cleanup"
-    if "password" in query or "change" in query or "username" in query:
-        return "credentials"
-    if "save" in query or "add" in query or "retrieve" in query or "search" in query:
-        return "vault_ops"
-    return "general"
+    topic, _ = infer_ai_help_topic(query)
+    return topic
+
+
+def infer_ai_help_topic(query: str) -> tuple[str, float]:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return "general", 0.0
+
+    tokens = tokenize_ai_help_text(normalized_query)
+    if not tokens:
+        return "general", 0.0
+
+    best_topic = "general"
+    best_score = 0.0
+
+    for topic, keywords in AI_HELP_TOPIC_KEYWORDS.items():
+        overlap = len(tokens & keywords)
+        if overlap <= 0:
+            continue
+
+        token_coverage = overlap / max(1, len(tokens))
+        keyword_coverage = overlap / max(1, len(keywords))
+        score = (token_coverage * 0.7) + (keyword_coverage * 0.3)
+
+        if score > best_score:
+            best_score = score
+            best_topic = topic
+
+    if best_score <= 0.0:
+        return "general", 0.0
+
+    return best_topic, min(1.0, best_score)
 
 
 def learn_from_ai_help_question(credentials: dict[str, object], question: str) -> None:
@@ -268,11 +357,11 @@ def learn_from_ai_help_question(credentials: dict[str, object], question: str) -
     learning_state = normalize_ai_help_learning_state(
         credentials.get("ai_help_learning_state", {})
     )
-    topic = classify_ai_help_topic(query)
+    topic, confidence = infer_ai_help_topic(query)
 
     learning_state["total_questions"] = float(learning_state["total_questions"]) + 1.0
     topic_key = f"topic_{topic}"
-    learning_state[topic_key] = float(learning_state.get(topic_key, 0.0)) + 1.0
+    learning_state[topic_key] = float(learning_state.get(topic_key, 0.0)) + max(0.25, confidence)
     learning_state["last_topic"] = topic
     learning_state["last_question_at"] = float(int(time.time()))
 
@@ -2417,7 +2506,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     help_learning_state = normalize_ai_help_learning_state(
         credentials.get("ai_help_learning_state", {})
     )
-    current_topic = classify_ai_help_topic(query)
+    current_topic, topic_confidence = infer_ai_help_topic(query)
 
     topic_labels = {
         "two_step": "2-step verification",
@@ -2438,7 +2527,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     if not query:
         return "Ask a short question like: 'how do I enable two-step?' or 'how do I recover access?'."
 
-    if current_topic == "two_step":
+    if current_topic == "two_step" and topic_confidence >= 0.2:
         if not two_step_enabled:
             return (
                 "Two-step is currently disabled. Open Security Settings (option 7), choose enable, and complete setup. "
@@ -2450,7 +2539,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
             "Login requires username/password plus your second factor."
         )
 
-    if current_topic == "backup":
+    if current_topic == "backup" and topic_confidence >= 0.2:
         if not two_step_enabled:
             return "Backup recovery codes are available only after two-step is enabled."
         return (
@@ -2459,35 +2548,29 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
             "Each code is one-time use, and you can regenerate them in Security Settings."
         )
 
-    if current_topic == "integrity":
+    if current_topic == "integrity" and topic_confidence >= 0.2:
         return (
             "Use Data Integrity Check (option 10) to verify vault integrity. "
             "Startup also runs periodic warning-only integrity checks."
         )
 
-    if current_topic == "security_ai":
+    if current_topic == "security_ai" and topic_confidence >= 0.2:
         return (
             "Security AI monitors failed logins and unusual vault access behavior. "
             f"Current sensitivity is '{ai_sensitivity}' and adaptive learning is {'enabled' if ai_learning_enabled else 'disabled'}. "
             "Use Security AI Report (option 9) to review alerts and active thresholds."
         )
 
-    if current_topic == "cleanup":
+    if current_topic == "cleanup" and topic_confidence >= 0.2:
         return (
             "Use Remove Data-bank Files (option 8). It only targets Data-bank files and requires confirmation phrase plus password."
         )
 
-    if current_topic == "credentials":
+    if current_topic == "credentials" and topic_confidence >= 0.2:
         return "Use Change Username/Password (option 6). Password updates require strength checks."
 
-    if current_topic == "vault_ops":
+    if current_topic == "vault_ops" and topic_confidence >= 0.2:
         return "Use options 1-5 for data operations: add, list, search, retrieve, and delete vault entries."
-
-    if total_questions >= 3 and top_topic in topic_labels and top_topic != "general":
-        return (
-            "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
-            f"Based on your history, you often ask about {topic_labels[top_topic]}."
-        )
 
     program_matches = find_program_help_matches(question)
     if program_matches:
@@ -2500,6 +2583,12 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
             "I matched your question to these program areas: "
             + " | ".join(previews)
             + ". Ask a follow-up and I can narrow it down."
+        )
+
+    if total_questions >= 3 and top_topic in topic_labels and top_topic != "general":
+        return (
+            "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
+            f"Based on your history, you often ask about {topic_labels[top_topic]}."
         )
 
     return (
