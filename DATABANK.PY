@@ -174,6 +174,83 @@ def normalize_ai_learning_state(value: object) -> dict[str, float]:
     return normalized
 
 
+def normalize_ai_help_learning_state(value: object) -> dict[str, object]:
+    numeric_defaults: dict[str, float] = {
+        "total_questions": 0.0,
+        "last_question_at": 0.0,
+        "topic_two_step": 0.0,
+        "topic_backup": 0.0,
+        "topic_integrity": 0.0,
+        "topic_security_ai": 0.0,
+        "topic_cleanup": 0.0,
+        "topic_credentials": 0.0,
+        "topic_vault_ops": 0.0,
+        "topic_general": 0.0,
+    }
+    allowed_topics = {
+        "two_step",
+        "backup",
+        "integrity",
+        "security_ai",
+        "cleanup",
+        "credentials",
+        "vault_ops",
+        "general",
+    }
+
+    normalized: dict[str, object] = {**numeric_defaults, "last_topic": ""}
+    if not isinstance(value, dict):
+        return normalized
+
+    for key, default in numeric_defaults.items():
+        try:
+            parsed = float(value.get(key, default))
+        except (TypeError, ValueError):
+            parsed = default
+        normalized[key] = max(0.0, parsed)
+
+    topic = str(value.get("last_topic", "")).strip().lower()
+    normalized["last_topic"] = topic if topic in allowed_topics else ""
+    return normalized
+
+
+def classify_ai_help_topic(query: str) -> str:
+    if "two-step" in query or "2-step" in query or "2fa" in query or "totp" in query:
+        return "two_step"
+    if "backup" in query or "recovery" in query:
+        return "backup"
+    if "integrity" in query or "tamper" in query or "hash" in query:
+        return "integrity"
+    if "security ai" in query or "alerts" in query or "anomaly" in query:
+        return "security_ai"
+    if "remove" in query or "delete file" in query or "cleanup" in query:
+        return "cleanup"
+    if "password" in query or "change" in query or "username" in query:
+        return "credentials"
+    if "save" in query or "add" in query or "retrieve" in query or "search" in query:
+        return "vault_ops"
+    return "general"
+
+
+def learn_from_ai_help_question(credentials: dict[str, object], question: str) -> None:
+    query = question.strip().lower()
+    if not query:
+        return
+
+    learning_state = normalize_ai_help_learning_state(
+        credentials.get("ai_help_learning_state", {})
+    )
+    topic = classify_ai_help_topic(query)
+
+    learning_state["total_questions"] = float(learning_state["total_questions"]) + 1.0
+    topic_key = f"topic_{topic}"
+    learning_state[topic_key] = float(learning_state.get(topic_key, 0.0)) + 1.0
+    learning_state["last_topic"] = topic
+    learning_state["last_question_at"] = float(int(time.time()))
+
+    credentials["ai_help_learning_state"] = learning_state
+
+
 def apply_security_ai_sensitivity(sensitivity: object) -> None:
     """Apply a named sensitivity profile to active Security AI thresholds."""
     global CURRENT_SECURITY_AI_SENSITIVITY
@@ -667,6 +744,7 @@ def default_credentials() -> dict[str, object]:
         "security_ai_sensitivity": DEFAULT_SECURITY_AI_SENSITIVITY,
         "security_ai_learning_enabled": DEFAULT_SECURITY_AI_LEARNING_ENABLED,
         "ai_learning_state": normalize_ai_learning_state({}),
+        "ai_help_learning_state": normalize_ai_help_learning_state({}),
         "vault_integrity_hash": "",
         "vault_integrity_last_verified": 0,
         "two_step_secret_encrypted": "",
@@ -1110,6 +1188,9 @@ def load_credentials() -> dict[str, object]:
                     DEFAULT_SECURITY_AI_LEARNING_ENABLED,
                 )
                 ai_learning_state = normalize_ai_learning_state(data.get("ai_learning_state", {}))
+                ai_help_learning_state = normalize_ai_help_learning_state(
+                    data.get("ai_help_learning_state", {})
+                )
                 vault_salt = normalize_vault_salt(data.get("vault_salt", ""))
                 vault_integrity_hash = normalize_hex_digest(
                     data.get("vault_integrity_hash", "")
@@ -1139,6 +1220,7 @@ def load_credentials() -> dict[str, object]:
                         "security_ai_sensitivity": security_ai_sensitivity,
                         "security_ai_learning_enabled": security_ai_learning_enabled,
                         "ai_learning_state": ai_learning_state,
+                        "ai_help_learning_state": ai_help_learning_state,
                         "vault_integrity_hash": vault_integrity_hash,
                         "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
@@ -1163,6 +1245,7 @@ def load_credentials() -> dict[str, object]:
                         "security_ai_sensitivity": security_ai_sensitivity,
                         "security_ai_learning_enabled": security_ai_learning_enabled,
                         "ai_learning_state": ai_learning_state,
+                        "ai_help_learning_state": ai_help_learning_state,
                         "vault_integrity_hash": vault_integrity_hash,
                         "vault_integrity_last_verified": vault_integrity_last_verified,
                         "two_step_secret_encrypted": two_step_secret_encrypted,
@@ -1216,6 +1299,9 @@ def save_credentials(credentials: dict[str, object]) -> bool:
             DEFAULT_SECURITY_AI_LEARNING_ENABLED,
         ),
         "ai_learning_state": normalize_ai_learning_state(credentials.get("ai_learning_state", {})),
+        "ai_help_learning_state": normalize_ai_help_learning_state(
+            credentials.get("ai_help_learning_state", {})
+        ),
         "vault_integrity_hash": normalize_hex_digest(credentials.get("vault_integrity_hash", "")),
         "vault_integrity_last_verified": clamp_int(
             credentials.get("vault_integrity_last_verified", 0),
@@ -1459,7 +1545,8 @@ def show_menu() -> None:
     print("8) Remove Data-bank Files (Data-bank files only)")
     print("9) Security AI Report (requires heavy auth)")
     print("10) Data Integrity Check")
-    print("11) Exit")
+    print("11) AI Help (simple questions)")
+    print("12) Exit")
 
 
 def view_security_ai_report(credentials: dict[str, object]) -> None:
@@ -2214,6 +2301,120 @@ def remove_databank_files(credentials: dict[str, object]) -> bool:
     return True
 
 
+def ai_help_response(question: str, credentials: dict[str, object]) -> str:
+    query = question.strip().lower()
+    two_step_enabled = is_two_step_enabled(credentials)
+    two_step_method = configured_two_step_method(credentials)
+    backup_codes_left = len(normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])))
+    ai_sensitivity = normalize_security_ai_sensitivity(
+        credentials.get("security_ai_sensitivity", DEFAULT_SECURITY_AI_SENSITIVITY)
+    )
+    ai_learning_enabled = to_bool(
+        credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
+        DEFAULT_SECURITY_AI_LEARNING_ENABLED,
+    )
+    help_learning_state = normalize_ai_help_learning_state(
+        credentials.get("ai_help_learning_state", {})
+    )
+    current_topic = classify_ai_help_topic(query)
+
+    topic_labels = {
+        "two_step": "2-step verification",
+        "backup": "backup recovery codes",
+        "integrity": "data integrity checks",
+        "security_ai": "Security AI alerts",
+        "cleanup": "safe cleanup/remove",
+        "credentials": "credentials/password changes",
+        "vault_ops": "vault data operations",
+        "general": "general usage",
+    }
+    top_topic = max(
+        topic_labels.keys(),
+        key=lambda key: float(help_learning_state.get(f"topic_{key}", 0.0)),
+    )
+    total_questions = int(float(help_learning_state.get("total_questions", 0.0)))
+
+    if not query:
+        return "Ask a short question like: 'how do I enable two-step?' or 'how do I recover access?'."
+
+    if current_topic == "two_step":
+        if not two_step_enabled:
+            return (
+                "Two-step is currently disabled. Open Security Settings (option 7), choose enable, and complete setup. "
+                "You can pick custom code (no app required) or authenticator app mode."
+            )
+        return (
+            "Two-step is currently enabled. "
+            f"Active method: {two_step_method}. "
+            "Login requires username/password plus your second factor."
+        )
+
+    if current_topic == "backup":
+        if not two_step_enabled:
+            return "Backup recovery codes are available only after two-step is enabled."
+        return (
+            "Backup recovery codes are generated when two-step is enabled and shown once. "
+            f"You currently have {backup_codes_left} code(s) remaining. "
+            "Each code is one-time use, and you can regenerate them in Security Settings."
+        )
+
+    if current_topic == "integrity":
+        return (
+            "Use Data Integrity Check (option 10) to verify vault integrity. "
+            "Startup also runs periodic warning-only integrity checks."
+        )
+
+    if current_topic == "security_ai":
+        return (
+            "Security AI monitors failed logins and unusual vault access behavior. "
+            f"Current sensitivity is '{ai_sensitivity}' and adaptive learning is {'enabled' if ai_learning_enabled else 'disabled'}. "
+            "Use Security AI Report (option 9) to review alerts and active thresholds."
+        )
+
+    if current_topic == "cleanup":
+        return (
+            "Use Remove Data-bank Files (option 8). It only targets Data-bank files and requires confirmation phrase plus password."
+        )
+
+    if current_topic == "credentials":
+        return "Use Change Username/Password (option 6). Password updates require strength checks."
+
+    if current_topic == "vault_ops":
+        return "Use options 1-5 for data operations: add, list, search, retrieve, and delete vault entries."
+
+    if total_questions >= 3 and top_topic in topic_labels and top_topic != "general":
+        return (
+            "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
+            f"Based on your history, you often ask about {topic_labels[top_topic]}."
+        )
+
+    return (
+        "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
+        "Try asking one of those topics directly."
+    )
+
+
+def ai_help_chat(credentials: dict[str, object]) -> None:
+    print("\nAI Help")
+    print("Ask simple Data-bank usage/security questions.")
+    print("Type 'back' to return to the main menu.")
+
+    while True:
+        user_question = prompt("AI Help > ")
+        if user_question is None:
+            print("Leaving AI Help.")
+            return
+
+        lowered = user_question.strip().lower()
+        if lowered in {"back", "exit", "quit"}:
+            print("Leaving AI Help.")
+            return
+
+        learn_from_ai_help_question(credentials, user_question)
+        save_credentials(credentials)
+        print(f"AI Help: {ai_help_response(user_question, credentials)}")
+
+
 def main() -> None:
     show_storage_info()
     first_run = not CONFIG_FILE.exists()
@@ -2257,7 +2458,7 @@ def main() -> None:
 
     while True:
         show_menu()
-        choice = prompt("Enter your choice (1-11): ")
+        choice = prompt("Enter your choice (1-12): ")
         if choice is None:
             print("Goodbye.")
             break
@@ -2284,11 +2485,13 @@ def main() -> None:
         elif choice == "10":
             run_data_integrity_check(vault, credentials)
         elif choice == "11":
+            ai_help_chat(credentials)
+        elif choice == "12":
             print("You are being securely logged out of Data Bank. Goodbye.")
             set_session_password(None)
             break
         else:
-            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, or 11.")
+            print("Invalid option. Please enter 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, or 12.")
 
 
 if __name__ == "__main__":
