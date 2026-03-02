@@ -238,6 +238,24 @@ AI_HELP_TOPIC_KEYWORDS: dict[str, set[str]] = {
     },
 }
 
+AI_HELP_CONVERSATION_INTENTS: dict[str, set[str]] = {
+    "thanks": {"thanks", "thank", "thankyou", "thx", "ty", "appreciate"},
+    "greeting": {"hi", "hello", "hey", "yo", "sup", "goodmorning", "goodafternoon", "goodevening"},
+    "confused": {
+        "dontknow",
+        "don'tknow",
+        "stuck",
+        "confused",
+        "lost",
+        "help",
+        "unsure",
+        "idk",
+        "whatdoido",
+        "nowwhat",
+    },
+    "goodbye": {"bye", "goodbye", "seeya", "later", "cya"},
+}
+
 
 def normalize_security_ai_sensitivity(value: object) -> str:
     candidate = str(value).strip().lower()
@@ -347,6 +365,28 @@ def infer_ai_help_topic(query: str) -> tuple[str, float]:
         return "general", 0.0
 
     return best_topic, min(1.0, best_score)
+
+
+def infer_ai_help_conversation_intent(query: str) -> str:
+    normalized_query = query.strip().lower()
+    if not normalized_query:
+        return ""
+
+    compact = normalized_query.replace(" ", "")
+    tokens = tokenize_ai_help_text(normalized_query)
+    tokens.add(compact)
+
+    for intent, keywords in AI_HELP_CONVERSATION_INTENTS.items():
+        if tokens & keywords:
+            return intent
+
+    if "i don't know" in normalized_query or "i dont know" in normalized_query:
+        return "confused"
+    if "what should i do" in normalized_query or "what do i do" in normalized_query:
+        return "confused"
+    if "thank you" in normalized_query:
+        return "thanks"
+    return ""
 
 
 def learn_from_ai_help_question(credentials: dict[str, object], question: str) -> None:
@@ -2506,6 +2546,7 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     help_learning_state = normalize_ai_help_learning_state(
         credentials.get("ai_help_learning_state", {})
     )
+    conversation_intent = infer_ai_help_conversation_intent(query)
     current_topic, topic_confidence = infer_ai_help_topic(query)
 
     topic_labels = {
@@ -2526,6 +2567,22 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
 
     if not query:
         return "Ask a short question like: 'how do I enable two-step?' or 'how do I recover access?'."
+
+    if conversation_intent == "thanks":
+        return "You're welcome. If you want, I can guide you step-by-step—start by saying what you're trying to do right now."
+
+    if conversation_intent == "greeting":
+        return "Hi. I can help with login, security settings, two-step setup, backup codes, or data operations. What do you want to do first?"
+
+    if conversation_intent == "goodbye":
+        return "No problem. Type 'back' any time to return to the main menu."
+
+    if conversation_intent == "confused":
+        return (
+            "No worries—quick start: 1) Add Data (option 1), 2) List/Search keys (options 2-3), "
+            "3) Retrieve/Delete (options 4-5), 4) Security Settings (option 7). "
+            "Tell me your goal and I’ll suggest the exact next option."
+        )
 
     if current_topic == "two_step" and topic_confidence >= 0.2:
         if not two_step_enabled:
