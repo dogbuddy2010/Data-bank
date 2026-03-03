@@ -11,6 +11,7 @@ import os
 from pathlib import Path
 import re
 import shutil
+import socket
 import sys
 import time
 from typing import Optional
@@ -2826,7 +2827,7 @@ def generate_external_ai_help_response(
         model = DEFAULT_AI_ASSISTANT_MODEL
 
     endpoint = os.environ.get(AI_ASSISTANT_API_URL_ENV, DEFAULT_AI_ASSISTANT_API_URL).strip()
-    if not endpoint:
+    if not endpoint or not endpoint.lower().startswith("https://"):
         endpoint = DEFAULT_AI_ASSISTANT_API_URL
 
     system_context = (
@@ -2864,16 +2865,24 @@ def generate_external_ai_help_response(
     )
 
     try:
-        with urlopen(request, timeout=AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS) as response:
+        with urlopen(request, timeout=AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS) as response:  # nosec B310
             response_body = response.read().decode("utf-8")
     except HTTPError as error:
-        LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}"
+        error_detail = ""
+        try:
+            error_body = error.read().decode("utf-8")
+            error_json = json.loads(error_body)
+            if isinstance(error_json, dict) and isinstance(error_json.get("error"), dict):
+                error_detail = str(error_json["error"].get("message", "")).strip()
+        except Exception:  # best-effort: if body unreadable/unparseable, use bare HTTP code
+            pass
+        LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}: {error_detail}" if error_detail else f"HTTP {error.code}"
         return None
     except URLError as error:
-        LAST_EXTERNAL_AI_ERROR = f"network error: {error.reason}"
-        return None
-    except TimeoutError:
-        LAST_EXTERNAL_AI_ERROR = "request timed out"
+        if isinstance(error.reason, (socket.timeout, TimeoutError)):
+            LAST_EXTERNAL_AI_ERROR = "request timed out"
+        else:
+            LAST_EXTERNAL_AI_ERROR = f"network error: {error.reason}"
         return None
     except (OSError, ValueError):
         LAST_EXTERNAL_AI_ERROR = "request failed"
