@@ -7,3 +7,8 @@ __pycache__/
 
 # Local secrets
 .env
+
+# Runtime data files (may contain plaintext or hashed credentials and vault data)
+vault_config.json
+vault_data.json
+ai_settings.json

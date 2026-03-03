@@ -13,8 +13,8 @@ from urllib.parse import quote
 
 
 DEFAULT_USERNAME = "guest"
-DEFAULT_PASSWORD = "11"
-PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
+DEFAULT_PASSWORD = "11"  # nosec B105 - intentional first-run default, hashed on first use
+PASSWORD_HASH_PREFIX = "pbkdf2_sha256"  # nosec B105 - hash algorithm identifier, not a password
 PASSWORD_HASH_ITERATIONS = 200_000
 DEFAULT_MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_LOCKOUT_SECONDS = 30
@@ -123,7 +123,7 @@ def default_credentials() -> dict[str, object]:
         "max_login_attempts": DEFAULT_MAX_LOGIN_ATTEMPTS,
         "lockout_seconds": DEFAULT_LOCKOUT_SECONDS,
         "two_step_enabled": DEFAULT_TWO_STEP_ENABLED,
-        "two_step_secret": "",
+        "two_step_secret": "",  # nosec B105 - empty placeholder, not a credential
         "backup_code_hashes": [],
     }
 
@@ -713,7 +713,7 @@ def change_security_settings(credentials: dict[str, object]) -> None:
         if confirm_disable and confirm_disable.strip().lower() in {"y", "yes"}:
             if authorize_sensitive_security_action(credentials):
                 credentials["two_step_enabled"] = False
-                credentials["two_step_secret"] = ""
+                credentials["two_step_secret"] = ""  # nosec B105 - clearing field, not storing a password
                 credentials["backup_code_hashes"] = []
                 print("Two-step verification disabled.")
             else:
