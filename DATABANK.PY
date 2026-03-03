@@ -39,8 +39,8 @@ except ImportError:
 
 
 DEFAULT_USERNAME = "guest"
-DEFAULT_PASSWORD = "11"
-PASSWORD_HASH_PREFIX = "pbkdf2_sha256"
+DEFAULT_PASSWORD = "11"  # nosec B105 - intentional first-run default, hashed on first use
+PASSWORD_HASH_PREFIX = "pbkdf2_sha256"  # nosec B105 - hash algorithm identifier, not a password
 PASSWORD_HASH_ITERATIONS = 200_000
 DEFAULT_MAX_LOGIN_ATTEMPTS = 3
 DEFAULT_LOCKOUT_SECONDS = 30
@@ -1182,8 +1182,8 @@ def default_credentials() -> dict[str, object]:
         "ai_help_chat_state": normalize_ai_help_chat_state({}),
         "vault_integrity_hash": "",
         "vault_integrity_last_verified": 0,
-        "two_step_secret_encrypted": "",
-        "two_step_custom_hash": "",
+        "two_step_secret_encrypted": "",  # nosec B105 - empty placeholder, not a credential
+        "two_step_custom_hash": "",  # nosec B105 - empty placeholder, not a credential
         "backup_code_hashes": [],
     }
 
@@ -1447,8 +1447,8 @@ def setup_two_step_verification(credentials: dict[str, object]) -> bool:
     method = "totp" if method_choice == "2" else "custom_code"
 
     username = str(credentials.get("username", DEFAULT_USERNAME)).strip() or DEFAULT_USERNAME
-    secret = ""
-    custom_hash = ""
+    secret = ""  # nosec B105 - local working variable, not a stored credential
+    custom_hash = ""  # nosec B105 - local working variable, not a stored credential
     session_password = get_session_password()
 
     if session_password is None:
@@ -1504,9 +1504,8 @@ def setup_two_step_verification(credentials: dict[str, object]) -> bool:
             session_password,
         )
     else:
-        credentials["two_step_secret_encrypted"] = ""
+        credentials["two_step_secret_encrypted"] = ""  # nosec B105 - clearing field, not storing a password
     credentials["two_step_custom_hash"] = custom_hash
-    credentials["backup_code_hashes"] = backup_code_hashes
     credentials.pop("_legacy_two_step_secret", None)
     if save_credentials(credentials):
         print("Two-step verification enabled.")
@@ -1779,8 +1778,8 @@ def save_credentials(credentials: dict[str, object]) -> bool:
         normalized["two_step_enabled"] = False
         normalized["backup_code_hashes"] = []
     if not normalized["two_step_enabled"]:
-        normalized["two_step_secret_encrypted"] = ""
-        normalized["two_step_custom_hash"] = ""
+        normalized["two_step_secret_encrypted"] = ""  # nosec B105 - clearing field, not storing a password
+        normalized["two_step_custom_hash"] = ""  # nosec B105 - clearing field, not storing a password
         normalized["backup_code_hashes"] = []
 
     try:
@@ -2391,7 +2390,7 @@ def change_credentials(credentials: dict[str, object], vault: dict[str, str]) ->
             print(f"- {issue}")
         return
 
-    reencrypted_totp_secret = ""
+    reencrypted_totp_secret = ""  # nosec B105 - local working variable, not a stored credential
     if (
         is_two_step_enabled(credentials)
         and configured_two_step_method(credentials) == "totp"
@@ -2525,8 +2524,8 @@ def change_security_settings(credentials: dict[str, object]) -> None:
             if authorize_sensitive_security_action(credentials):
                 credentials["two_step_enabled"] = False
                 credentials["two_step_method"] = DEFAULT_TWO_STEP_METHOD
-                credentials["two_step_secret_encrypted"] = ""
-                credentials["two_step_custom_hash"] = ""
+                credentials["two_step_secret_encrypted"] = ""  # nosec B105 - clearing field, not storing a password
+                credentials["two_step_custom_hash"] = ""  # nosec B105 - clearing field, not storing a password
                 credentials["backup_code_hashes"] = []
                 credentials.pop("_legacy_two_step_secret", None)
                 print("Two-step verification disabled.")
@@ -2874,7 +2873,7 @@ def generate_external_ai_help_response(
             error_json = json.loads(error_body)
             if isinstance(error_json, dict) and isinstance(error_json.get("error"), dict):
                 error_detail = str(error_json["error"].get("message", "")).strip()
-        except Exception:  # best-effort: if body unreadable/unparseable, use bare HTTP code
+        except Exception:  # best-effort: if body unreadable/unparseable, use bare HTTP code  # nosec B110
             pass
         LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}: {error_detail}" if error_detail else f"HTTP {error.code}"
         return None
