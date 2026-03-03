@@ -157,6 +157,17 @@ def load_local_dotenv() -> None:
             else:
                 os.environ.setdefault(env_key, env_value)
 
+    # Also honour OPENAI_API_KEY (and aliases) that are already set at the OS level
+    # (e.g. exported from the user's shell profile), in case no .env file was found.
+    if not os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip():
+        for _alias in ("OPENAI_API_KEY", "OPENAI_KEY", "OPENAI_APIKEY"):
+            _val = os.environ.get(_alias, "")
+            if _val:
+                _normalized = normalize_external_api_key(_val)
+                if _normalized:
+                    os.environ[AI_ASSISTANT_API_KEY_ENV] = _normalized
+                    break
+
 
 def is_writable_directory(directory: Path) -> bool:
     try:

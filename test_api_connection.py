@@ -233,6 +233,34 @@ class TestGenerateExternalAIHelpResponse(unittest.TestCase):
         self.assertIsNone(result)
         mock_open.assert_not_called()
 
+    # ------------------------------------------------------------------
+    # 13. load_local_dotenv picks up OPENAI_API_KEY already in OS env
+    # ------------------------------------------------------------------
+    def test_load_local_dotenv_picks_up_os_openai_key(self):
+        """load_local_dotenv should import OPENAI_API_KEY from the OS environment."""
+        os.environ.pop(AI_KEY_ENV, None)
+        os.environ["OPENAI_API_KEY"] = _VALID_KEY
+        try:
+            _mod.load_local_dotenv()
+            self.assertEqual(os.environ.get(AI_KEY_ENV, ""), _VALID_KEY)
+        finally:
+            os.environ.pop("OPENAI_API_KEY", None)
+            os.environ.pop(AI_KEY_ENV, None)
+
+    # ------------------------------------------------------------------
+    # 14. load_local_dotenv picks up OPENAI_KEY alias already in OS env
+    # ------------------------------------------------------------------
+    def test_load_local_dotenv_picks_up_os_openai_key_alias(self):
+        """load_local_dotenv should also accept the OPENAI_KEY alias."""
+        os.environ.pop(AI_KEY_ENV, None)
+        os.environ["OPENAI_KEY"] = _VALID_KEY
+        try:
+            _mod.load_local_dotenv()
+            self.assertEqual(os.environ.get(AI_KEY_ENV, ""), _VALID_KEY)
+        finally:
+            os.environ.pop("OPENAI_KEY", None)
+            os.environ.pop(AI_KEY_ENV, None)
+
 
 if __name__ == "__main__":
     unittest.main(verbosity=2)
