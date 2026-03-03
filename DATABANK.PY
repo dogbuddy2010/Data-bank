@@ -139,6 +139,12 @@ def load_local_dotenv() -> None:
             if len(env_value) >= 2 and env_value[0] == env_value[-1] and env_value[0] in {'"', "'"}:
                 env_value = env_value[1:-1]
 
+            if env_key in {"OPENAI_API_KEY", "OPENAI_KEY", "OPENAI_APIKEY"}:
+                normalized_key = normalize_external_api_key(env_value)
+                if normalized_key:
+                    os.environ[AI_ASSISTANT_API_KEY_ENV] = normalized_key
+                continue
+
             if env_key == AI_ASSISTANT_API_KEY_ENV:
                 normalized_key = normalize_external_api_key(env_value)
                 if not normalized_key:
