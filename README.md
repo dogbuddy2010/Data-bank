@@ -25,6 +25,7 @@ A simple Python data vault project for storing and retrieving key/value data. Th
 - Remove Data-bank created files from menu option 8 (phrase + password required)
 - Run Data Integrity Check from menu option 10
 - Built-in Support Assistant chat for usage/security questions from menu option 11
+- Support Assistant can optionally use an external AI API when `DATABANK_AI_API_KEY` is set
 - Support Assistant adapts to each user’s question history and personalizes guidance over time
 - Support Assistant scans the program’s own functions/docstrings at startup to answer broader free-form questions
 - Support Assistant uses weighted natural-language intent scoring (not only exact command phrases)
@@ -39,6 +40,32 @@ From the project folder:
 ```bash
 python3 run_databank.py
 ```
+
+### Optional: External AI API for Support Assistant
+The assistant works offline by default. To enable API-backed responses, set environment variables before running:
+
+```bash
+export DATABANK_AI_API_KEY="<your-api-key>"
+export DATABANK_AI_MODEL="gpt-4.1-mini"   # optional
+export DATABANK_AI_API_URL="https://api.openai.com/v1/responses"   # optional
+python3 run_databank.py
+```
+
+Security note: never hardcode API keys in source files or commit them to git.
+
+Alternative local setup (recommended):
+
+```bash
+cat > .env << 'EOF'
+DATABANK_AI_API_KEY=your_api_key_here
+DATABANK_AI_MODEL=gpt-4.1-mini
+DATABANK_AI_API_URL=https://api.openai.com/v1/responses
+EOF
+# edit .env and replace your_api_key_here
+python3 run_databank.py
+```
+
+Data-bank auto-loads `.env` from the project folder at startup.
 
 This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 

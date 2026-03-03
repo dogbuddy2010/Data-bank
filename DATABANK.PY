@@ -15,6 +15,8 @@ import sys
 import time
 from typing import Optional
 from urllib.parse import quote
+from urllib.error import HTTPError, URLError
+from urllib.request import Request, urlopen
 
 try:
     import termios
@@ -54,9 +56,99 @@ MIN_LOGIN_ATTEMPTS = 1
 MAX_LOGIN_ATTEMPTS = 10
 MIN_LOCKOUT_SECONDS = 0
 MAX_LOCKOUT_SECONDS = 300
+AI_ASSISTANT_API_KEY_ENV = "DATABANK_AI_API_KEY"
+AI_ASSISTANT_API_URL_ENV = "DATABANK_AI_API_URL"
+AI_ASSISTANT_MODEL_ENV = "DATABANK_AI_MODEL"
+DEFAULT_AI_ASSISTANT_API_URL = "https://api.openai.com/v1/responses"
+DEFAULT_AI_ASSISTANT_MODEL = "gpt-4.1-mini"
+AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS = 12
+AI_ASSISTANT_MAX_QUESTION_CHARS = 600
 
 
 SESSION_PASSWORD: Optional[str] = None
+LAST_EXTERNAL_AI_ERROR = ""
+LAST_EXTERNAL_AI_USED = False
+
+
+def normalize_external_api_key(value: object) -> str:
+    text = str(value).strip()
+    if not text:
+        return ""
+
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return ""
+
+    for line in lines:
+        candidate = line
+        if line.startswith(f"{AI_ASSISTANT_API_KEY_ENV}="):
+            candidate = line.split("=", 1)[1].strip()
+
+        if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {'"', "'"}:
+            candidate = candidate[1:-1].strip()
+
+        match = re.search(r"sk-[A-Za-z0-9._-]{20,}", candidate)
+        if match:
+            return match.group(0)
+
+    return ""
+
+
+def load_local_dotenv() -> None:
+    candidate_paths = [Path.cwd() / ".env"]
+
+    main_file = globals().get("__file__")
+    if isinstance(main_file, str):
+        candidate_paths.append(Path(main_file).resolve().parent / ".env")
+
+    loaded_files: set[Path] = set()
+    for dotenv_path in candidate_paths:
+        resolved = dotenv_path.resolve()
+        if resolved in loaded_files or not resolved.exists() or not resolved.is_file():
+            continue
+        loaded_files.add(resolved)
+
+        try:
+            lines = resolved.read_text(encoding="utf-8").splitlines()
+        except OSError:
+            continue
+
+        for raw_line in lines:
+            line = raw_line.strip()
+            if not line or line.startswith("#"):
+                continue
+
+            if "=" not in line:
+                inferred_key = normalize_external_api_key(line)
+                if inferred_key:
+                    os.environ[AI_ASSISTANT_API_KEY_ENV] = inferred_key
+                continue
+
+            if line.lower().startswith("export "):
+                line = line[7:].strip()
+
+            if "=" not in line:
+                continue
+
+            key, value = line.split("=", 1)
+            env_key = key.strip()
+            env_value = value.strip()
+            if not env_key:
+                continue
+
+            if len(env_value) >= 2 and env_value[0] == env_value[-1] and env_value[0] in {'"', "'"}:
+                env_value = env_value[1:-1]
+
+            if env_key == AI_ASSISTANT_API_KEY_ENV:
+                normalized_key = normalize_external_api_key(env_value)
+                if not normalized_key:
+                    continue
+                env_value = normalized_key
+
+            if env_key.startswith("DATABANK_AI_"):
+                os.environ[env_key] = env_value
+            else:
+                os.environ.setdefault(env_key, env_value)
 
 
 def is_writable_directory(directory: Path) -> bool:
@@ -93,6 +185,7 @@ STORAGE_DIR = resolve_storage_dir()
 DATA_FILE = STORAGE_DIR / "vault_data.json"
 CONFIG_FILE = STORAGE_DIR / "vault_config.json"
 SECURITY_LOG_FILE = STORAGE_DIR / "security_events.jsonl"
+AI_SETTINGS_FILE = STORAGE_DIR / "ai_settings.json"
 
 SECURITY_RULE_WINDOW_SECONDS = 300
 SECURITY_AI_PROFILES: dict[str, dict[str, int]] = {
@@ -465,8 +558,21 @@ def tokenize_ai_help_text(text: str) -> set[str]:
 def build_program_help_index() -> None:
     global PROGRAM_HELP_INDEX
 
-    source_path = Path(__file__)
     try:
+        source_candidate = globals().get("__file__")
+        if isinstance(source_candidate, str) and source_candidate.strip():
+            source_path = Path(source_candidate)
+        else:
+            argv_candidate = sys.argv[0] if sys.argv else ""
+            if isinstance(argv_candidate, str) and argv_candidate.strip() and Path(argv_candidate).is_file():
+                source_path = Path(argv_candidate)
+            else:
+                fallback = Path.cwd() / "DATABANK.PY"
+                if not fallback.is_file():
+                    PROGRAM_HELP_INDEX = []
+                    return
+                source_path = fallback
+
         source_text = source_path.read_text(encoding="utf-8")
         tree = ast.parse(source_text)
     except (OSError, SyntaxError, UnicodeDecodeError):
@@ -748,6 +854,52 @@ def load_security_events(max_events: int = 500) -> list[dict[str, object]]:
     if max_events <= 0:
         return events
     return events[-max_events:]
+
+
+def load_local_ai_settings_file() -> None:
+    if not AI_SETTINGS_FILE.exists() or not AI_SETTINGS_FILE.is_file():
+        return
+
+    try:
+        parsed = json.loads(AI_SETTINGS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return
+
+    if not isinstance(parsed, dict):
+        return
+
+    api_key = normalize_external_api_key(parsed.get("api_key", ""))
+    model = str(parsed.get("model", "")).strip()
+    api_url = str(parsed.get("api_url", "")).strip()
+
+    if api_key and not os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip():
+        os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+    if model and not os.environ.get(AI_ASSISTANT_MODEL_ENV, "").strip():
+        os.environ[AI_ASSISTANT_MODEL_ENV] = model
+    if api_url and not os.environ.get(AI_ASSISTANT_API_URL_ENV, "").strip():
+        os.environ[AI_ASSISTANT_API_URL_ENV] = api_url
+
+
+def save_local_ai_settings_file(api_key: str) -> bool:
+    normalized_key = normalize_external_api_key(api_key)
+    if not normalized_key:
+        return False
+
+    payload = {
+        "api_key": normalized_key,
+        "model": os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL).strip()
+        or DEFAULT_AI_ASSISTANT_MODEL,
+        "api_url": os.environ.get(AI_ASSISTANT_API_URL_ENV, DEFAULT_AI_ASSISTANT_API_URL).strip()
+        or DEFAULT_AI_ASSISTANT_API_URL,
+    }
+
+    try:
+        AI_SETTINGS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        AI_SETTINGS_FILE.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        AI_SETTINGS_FILE.chmod(0o600)
+        return True
+    except OSError:
+        return False
 
 
 def format_event_timestamp(timestamp_value: object) -> str:
@@ -2586,7 +2738,72 @@ def remove_databank_files(credentials: dict[str, object]) -> bool:
 
 
 def ai_help_response(question: str, credentials: dict[str, object]) -> str:
-    query = question.strip().lower()
+    query = question.strip()
+    if not query:
+        return "Ask your question and I’ll help with the exact next steps in Data-bank."
+
+    clear_ai_help_pending_question(credentials)
+    external_response = generate_external_ai_help_response(query, credentials)
+    if external_response:
+        return external_response
+
+    reason = LAST_EXTERNAL_AI_ERROR.strip() or "external API unavailable"
+    return (
+        "Support Assistant requires external AI right now, but the request failed "
+        f"({reason}). Check API key/network and try again."
+    )
+
+
+def extract_text_candidates(value: object) -> list[str]:
+    results: list[str] = []
+
+    def walk(node: object) -> None:
+        if isinstance(node, str):
+            text_value = node.strip()
+            if text_value:
+                results.append(text_value)
+            return
+
+        if isinstance(node, dict):
+            prioritized_text_fields = ("output_text", "text", "content")
+            for key in prioritized_text_fields:
+                if key in node:
+                    walk(node[key])
+
+            for key, child in node.items():
+                if key in prioritized_text_fields:
+                    continue
+                walk(child)
+            return
+
+        if isinstance(node, list):
+            for item in node:
+                walk(item)
+
+    walk(value)
+    return results
+
+
+def generate_external_ai_help_response(
+    question: str,
+    credentials: dict[str, object],
+) -> Optional[str]:
+    global LAST_EXTERNAL_AI_ERROR
+    global LAST_EXTERNAL_AI_USED
+
+    LAST_EXTERNAL_AI_ERROR = ""
+    LAST_EXTERNAL_AI_USED = False
+    api_key = normalize_external_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
+    if not api_key:
+        LAST_EXTERNAL_AI_ERROR = "missing API key"
+        return None
+    os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+
+    user_question = question.strip()
+    if not user_question:
+        return None
+    user_question = user_question[:AI_ASSISTANT_MAX_QUESTION_CHARS]
+
     two_step_enabled = is_two_step_enabled(credentials)
     two_step_method = configured_two_step_method(credentials)
     backup_codes_left = len(normalize_backup_code_hashes(credentials.get("backup_code_hashes", [])))
@@ -2597,250 +2814,100 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
         credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
         DEFAULT_SECURITY_AI_LEARNING_ENABLED,
     )
-    help_learning_state = normalize_ai_help_learning_state(
-        credentials.get("ai_help_learning_state", {})
-    )
-    chat_state = normalize_ai_help_chat_state(credentials.get("ai_help_chat_state", {}))
-    conversation_intent = infer_ai_help_conversation_intent(query)
-    current_topic, topic_confidence = infer_ai_help_topic(query)
 
-    topic_labels = {
-        "two_step": "2-step verification",
-        "backup": "backup recovery codes",
-        "integrity": "data integrity checks",
-        "security_ai": "Security AI alerts",
-        "cleanup": "safe cleanup/remove",
-        "credentials": "credentials/password changes",
-        "vault_ops": "vault data operations",
-        "general": "general usage",
+    model = os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL).strip()
+    if not model:
+        model = DEFAULT_AI_ASSISTANT_MODEL
+
+    endpoint = os.environ.get(AI_ASSISTANT_API_URL_ENV, DEFAULT_AI_ASSISTANT_API_URL).strip()
+    if not endpoint:
+        endpoint = DEFAULT_AI_ASSISTANT_API_URL
+
+    system_context = (
+        "You are the Data-bank Support Assistant for a CLI app. "
+        "You are the primary responder: do not use canned templates and do not mention internal fallback logic. "
+        "Give practical, natural guidance based on the user's request and context. "
+        "When helpful, map actions to menu options exactly as follows: "
+        "1 Add Data, 2 List all keys, 3 Search keys, 4 Retrieve Data by Key, 5 Delete Data by Key, "
+        "6 Change Username/Password, 7 Security Settings, 8 Remove Data-bank Files, "
+        "9 Security Analytics Report, 10 Data Integrity Check, 11 Support Assistant, 12 Exit. "
+        "Never invent option numbers or features. "
+        "Never ask for API keys, passwords, 2-step codes, or recovery codes. "
+        "Keep responses concise and clear, usually 2-6 sentences, but prioritize correctness over brevity. "
+        f"Current security context: two_step_enabled={two_step_enabled}, "
+        f"two_step_method={two_step_method}, backup_codes_left={backup_codes_left}, "
+        f"security_ai_sensitivity={ai_sensitivity}, security_ai_learning_enabled={ai_learning_enabled}."
+    )
+
+    payload = {
+        "model": model,
+        "input": [
+            {"role": "system", "content": system_context},
+            {"role": "user", "content": user_question},
+        ],
     }
-    top_topic = max(
-        topic_labels.keys(),
-        key=lambda key: float(help_learning_state.get(f"topic_{key}", 0.0)),
+
+    request = Request(
+        endpoint,
+        data=json.dumps(payload).encode("utf-8"),
+        headers={
+            "Authorization": f"Bearer {api_key}",
+            "Content-Type": "application/json",
+        },
+        method="POST",
     )
-    total_questions = int(float(help_learning_state.get("total_questions", 0.0)))
-    pending_question_type = str(chat_state.get("pending_question_type", "")).strip().lower()
-    pending_set_at = float(chat_state.get("pending_set_at", 0.0))
 
-    if pending_question_type and (time.time() - pending_set_at) > 600:
-        clear_ai_help_pending_question(credentials)
-        pending_question_type = ""
-
-    def parse_menu_option_reference(text: str) -> Optional[int]:
-        stripped = text.strip().lower()
-        if not stripped:
-            return None
-
-        if stripped.isdigit():
-            value = int(stripped)
-            return value if 1 <= value <= 12 else None
-
-        match = re.search(r"\boption\s*(\d{1,2})\b", stripped)
-        if match:
-            value = int(match.group(1))
-            return value if 1 <= value <= 12 else None
+    try:
+        with urlopen(request, timeout=AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS) as response:
+            response_body = response.read().decode("utf-8")
+    except HTTPError as error:
+        LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}"
+        return None
+    except URLError as error:
+        LAST_EXTERNAL_AI_ERROR = f"network error: {error.reason}"
+        return None
+    except TimeoutError:
+        LAST_EXTERNAL_AI_ERROR = "request timed out"
+        return None
+    except (OSError, ValueError):
+        LAST_EXTERNAL_AI_ERROR = "request failed"
         return None
 
-    def is_affirmative(text: str) -> bool:
-        tokens = tokenize_ai_help_text(text)
-        return bool(tokens & {"yes", "y", "yeah", "yep", "sure", "ok", "okay", "do", "enable"})
+    try:
+        parsed = json.loads(response_body)
+    except json.JSONDecodeError:
+        LAST_EXTERNAL_AI_ERROR = "invalid JSON response"
+        return None
 
-    def is_negative(text: str) -> bool:
-        tokens = tokenize_ai_help_text(text)
-        return bool(tokens & {"no", "n", "nope", "nah", "later", "not"})
+    if not isinstance(parsed, dict):
+        LAST_EXTERNAL_AI_ERROR = "invalid response payload"
+        return None
 
-    menu_option_help = {
-        1: "Option 1 adds new vault data by key.",
-        2: "Option 2 lists all stored keys.",
-        3: "Option 3 searches keys by text.",
-        4: "Option 4 retrieves the value for a key.",
-        5: "Option 5 deletes data by key.",
-        6: "Option 6 changes username/password.",
-        7: "Option 7 opens Security Settings.",
-        8: "Option 8 removes only Data-bank-created files after strict confirmation.",
-        9: "Option 9 opens Security Analytics Report with stronger verification.",
-        10: "Option 10 runs Data Integrity Check.",
-        11: "Option 11 opens Support Assistant.",
-        12: "Option 12 securely logs you out and exits.",
-    }
+    error_payload = parsed.get("error")
+    if isinstance(error_payload, dict):
+        message = str(error_payload.get("message", "")).strip()
+        LAST_EXTERNAL_AI_ERROR = message or "API returned an error"
+        return None
 
-    if not query:
-        return "Ask a quick question like 'How do I enable two-step?' or 'How do I recover access?'."
+    prioritized_sections: list[object] = [
+        parsed.get("output_text"),
+        parsed.get("output"),
+        parsed.get("choices"),
+        parsed,
+    ]
 
-    if pending_question_type == "choose_goal":
-        if is_affirmative(query) or is_negative(query):
-            return (
-                "Tell me your goal in one line. You can reply with a menu option number (1-12) "
-                "or something like 'enable two-step', 'list keys', or 'retrieve key'."
-            )
-        if topic_confidence >= 0.2:
-            clear_ai_help_pending_question(credentials)
+    for section in prioritized_sections:
+        for candidate in extract_text_candidates(section):
+            if candidate and not candidate.startswith("{"):
+                LAST_EXTERNAL_AI_USED = True
+                return candidate
 
-    if pending_question_type == "two_step_method_choice":
-        if any(word in query for word in ("custom", "no app", "without app", "pin", "manual")):
-            clear_ai_help_pending_question(credentials)
-            return (
-                "Great choice. Open Security Settings (option 7), enable two-step, then choose custom code. "
-                "After that, create your own second-factor code."
-            )
-        if any(word in query for word in ("totp", "app", "authenticator", "google", "microsoft")):
-            clear_ai_help_pending_question(credentials)
-            return (
-                "Great choice. Open Security Settings (option 7), enable two-step, then choose authenticator app mode. "
-                "Enter the app-generated code to finish setup."
-            )
-        return "Reply with either 'custom code' or 'authenticator app' and I’ll give exact steps."
-
-    if pending_question_type == "enable_two_step_confirm":
-        if is_affirmative(query):
-            clear_ai_help_pending_question(credentials)
-            return "Open Security Settings (option 7), then enable two-step verification and complete setup."
-        if is_negative(query):
-            clear_ai_help_pending_question(credentials)
-            return "No problem. You can keep using options 1-5 and enable two-step later from option 7."
-        return "Please reply with 'yes' or 'no' so I can guide the next step."
-
-    menu_option = parse_menu_option_reference(query)
-    if menu_option is not None:
-        clear_ai_help_pending_question(credentials)
-        return menu_option_help.get(menu_option, "That menu option is not recognized.")
-
-    if conversation_intent == "thanks":
-        set_ai_help_pending_question(
-            credentials,
-            "choose_goal",
-            "What are you trying to do right now?",
-        )
-        return "You’re welcome. If you want step-by-step help, tell me what you’re trying to do right now."
-
-    if conversation_intent == "greeting":
-        set_ai_help_pending_question(
-            credentials,
-            "choose_goal",
-            "What do you want to do first?",
-        )
-        return "Hi. I can help with login, security settings, two-step setup, backup codes, and vault actions. What do you want to do first?"
-
-    if conversation_intent == "goodbye":
-        clear_ai_help_pending_question(credentials)
-        return "No problem. Type 'back' any time to return to the main menu."
-
-    if conversation_intent == "confused":
-        set_ai_help_pending_question(
-            credentials,
-            "choose_goal",
-            "Tell me your goal.",
-        )
-        return (
-            "No worries—quick start: 1) Add Data (option 1), 2) List/Search keys (options 2-3), "
-            "3) Retrieve/Delete (options 4-5), 4) Security Settings (option 7). "
-            "Tell me your goal and I’ll point you to the exact next option."
-        )
-
-    if current_topic == "two_step" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        if not two_step_enabled:
-            set_ai_help_pending_question(
-                credentials,
-                "two_step_method_choice",
-                "Do you want custom code or authenticator app mode?",
-            )
-            return (
-                "Two-step is currently off. Open Security Settings (option 7), choose enable, and complete setup. "
-                "You can choose custom code (no app needed) or authenticator app mode. Which do you want?"
-            )
-        return (
-            "Two-step is currently on. "
-            f"Active method: {two_step_method}. "
-            "Login requires username/password plus your second factor."
-        )
-
-    if current_topic == "backup" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        if not two_step_enabled:
-            set_ai_help_pending_question(
-                credentials,
-                "enable_two_step_confirm",
-                "Do you want to enable two-step now?",
-            )
-            return "Backup recovery codes are available only after two-step is enabled. Do you want to turn two-step on now?"
-        return (
-            "Backup recovery codes are generated when two-step is enabled and shown once. "
-            f"You currently have {backup_codes_left} code(s) remaining. "
-            "Each code is one-time use, and you can regenerate them in Security Settings."
-        )
-
-    if current_topic == "integrity" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        return (
-            "Use Data Integrity Check (option 10) to verify vault integrity. "
-            "Startup also runs periodic warning-only checks in the background."
-        )
-
-    if current_topic == "security_ai" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        return (
-            "Security AI monitors failed logins and unusual vault access patterns. "
-            f"Current sensitivity is '{ai_sensitivity}' and adaptive learning is {'enabled' if ai_learning_enabled else 'disabled'}. "
-            "Use Security Analytics Report (option 9) to review alerts and active thresholds."
-        )
-
-    if current_topic == "cleanup" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        return (
-            "Use Remove Data-bank Files (option 8). It only targets Data-bank files and requires a confirmation phrase plus password."
-        )
-
-    if current_topic == "credentials" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        return "Use Change Username/Password (option 6). New passwords must pass strength checks."
-
-    if current_topic == "vault_ops" and topic_confidence >= 0.2:
-        clear_ai_help_pending_question(credentials)
-        if "list" in query:
-            return "To list all keys, use option 2."
-        if "search" in query:
-            return "To search keys by text, use option 3."
-        if "retrieve" in query or "get" in query:
-            return "To retrieve data by key, use option 4."
-        if "delete" in query or "remove" in query:
-            return "To delete data by key, use option 5."
-        return "Use options 1-5 for vault operations: add, list, search, retrieve, and delete entries."
-
-    program_matches = find_program_help_matches(question)
-    if program_matches:
-        clear_ai_help_pending_question(credentials)
-        previews: list[str] = []
-        for match in program_matches[:2]:
-            name = str(match.get("name", "")).strip()
-            summary = str(match.get("summary", "")).strip()
-            previews.append(f"{name}: {summary}")
-        return (
-            "I matched your question to these program areas: "
-            + " | ".join(previews)
-            + ". Ask a follow-up and I can narrow this down."
-        )
-
-    if total_questions >= 3 and top_topic in topic_labels and top_topic != "general":
-        set_ai_help_pending_question(
-            credentials,
-            "choose_goal",
-            "What do you want to do next?",
-        )
-        return (
-            "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
-            f"Based on your history, you often ask about {topic_labels[top_topic]}. What would you like to do next?"
-        )
-
-    set_ai_help_pending_question(
-        credentials,
-        "choose_goal",
-        "What do you want to do now?",
-    )
-    return (
-        "I can help with login, two-step setup, backup codes, security settings, integrity checks, and menu navigation. "
-        "Tell me your goal and I’ll map it to the right menu option."
-    )
+    status = str(parsed.get("status", "")).strip()
+    if status:
+        LAST_EXTERNAL_AI_ERROR = f"no assistant text in API response (status={status})"
+    else:
+        LAST_EXTERNAL_AI_ERROR = "no assistant text in API response"
+    return None
 
 
 def support_assistant_next_step(topic: str, confidence: float, user_question: str) -> str:
@@ -2903,6 +2970,27 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
     print("\nSupport Assistant")
     print("Ask simple Data-bank usage and security questions.")
+    api_key_loaded = bool(os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip())
+    if not api_key_loaded:
+        entered_api_key = prompt_password_masked(
+            "API key not loaded. Paste OpenAI key now (or press Enter to skip): "
+        )
+        if entered_api_key:
+            normalized_key = normalize_external_api_key(entered_api_key)
+            if normalized_key:
+                os.environ[AI_ASSISTANT_API_KEY_ENV] = normalized_key
+                api_key_loaded = True
+                persist_choice = prompt("Save this key for future app launches? (y/N): ")
+                if persist_choice and persist_choice.strip().lower() in {"y", "yes"}:
+                    if save_local_ai_settings_file(normalized_key):
+                        print(f"Saved API settings to {AI_SETTINGS_FILE}")
+                    else:
+                        print("Could not save API settings file.")
+            else:
+                print("API key format was not recognized. Please paste only the key value.")
+
+    print("Mode: External AI API")
+    print(f"API key loaded: {'yes' if api_key_loaded else 'no'}")
     print("Type 'back' (or 'exit', 'quit', 'stop', 'bye') to return to the main menu.")
 
     while True:
@@ -2917,14 +3005,18 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
         learn_from_ai_help_question(credentials, user_question)
         response = ai_help_response(user_question, credentials)
-        inferred_topic, inferred_confidence = infer_ai_help_topic(user_question)
-        next_step = support_assistant_next_step(inferred_topic, inferred_confidence, user_question)
         save_credentials(credentials)
         print(f"Support Assistant: {response}")
-        print(next_step)
 
 
 def main() -> None:
+    if not sys.stdin.isatty():
+        print("Data-bank requires an interactive terminal for login and menu input.")
+        print("Run it from a terminal with: python3 run_databank.py")
+        return
+
+    load_local_dotenv()
+    load_local_ai_settings_file()
     show_storage_info()
     build_program_help_index()
     first_run = not CONFIG_FILE.exists()
