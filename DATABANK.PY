@@ -88,7 +88,7 @@ def normalize_external_api_key(value: object) -> str:
         if len(candidate) >= 2 and candidate[0] == candidate[-1] and candidate[0] in {'"', "'"}:
             candidate = candidate[1:-1].strip()
 
-        match = re.search(r"sk-[A-Za-z0-9._-]{20,}", candidate)
+        match = re.search(r"sk-[^\s'\"`]{20,}", candidate)
         if match:
             return match.group(0)
 
