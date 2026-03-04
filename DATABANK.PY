@@ -887,6 +887,48 @@ def load_local_ai_settings_file() -> None:
         os.environ[AI_ASSISTANT_API_URL_ENV] = api_url
 
 
+def discover_local_api_key() -> str:
+    candidate_files: list[Path] = [Path.cwd() / ".env"]
+
+    main_file = globals().get("__file__")
+    if isinstance(main_file, str):
+        candidate_files.append(Path(main_file).resolve().parent / ".env")
+
+    candidate_files.append(AI_SETTINGS_FILE)
+
+    checked: set[Path] = set()
+    for candidate in candidate_files:
+        try:
+            resolved = candidate.resolve()
+        except OSError:
+            resolved = candidate
+
+        if resolved in checked or not candidate.exists() or not candidate.is_file():
+            continue
+        checked.add(resolved)
+
+        try:
+            content = candidate.read_text(encoding="utf-8")
+        except OSError:
+            continue
+
+        discovered = normalize_external_api_key(content)
+        if discovered:
+            return discovered
+
+        try:
+            parsed = json.loads(content)
+        except json.JSONDecodeError:
+            continue
+
+        if isinstance(parsed, dict):
+            discovered = normalize_external_api_key(parsed.get("api_key", ""))
+            if discovered:
+                return discovered
+
+    return ""
+
+
 def normalize_assistant_endpoint(value: object) -> str:
     candidate = str(value).strip()
     if not candidate:
@@ -908,6 +950,12 @@ def assistant_runtime_config() -> tuple[str, str, str]:
                 api_key = alias_value
                 os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
                 break
+
+    if not api_key:
+        discovered = discover_local_api_key()
+        if discovered:
+            api_key = discovered
+            os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
 
     model = str(os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL)).strip()
     if not model:
