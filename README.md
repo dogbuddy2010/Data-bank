@@ -51,6 +51,11 @@ export DATABANK_AI_API_URL="https://api.openai.com/v1/responses"   # optional
 python3 run_databank.py
 ```
 
+Security + wiring notes:
+- API keys are loaded from `DATABANK_AI_API_KEY` (or `OPENAI_API_KEY` alias), never hardcoded in source.
+- API settings can be loaded from local `.env` and optional local `ai_settings.json` with file permission hardening.
+- API endpoint is HTTPS-validated at runtime; invalid/non-HTTPS values are rejected and defaulted safely.
+
 Security note: never hardcode API keys in source files or commit them to git.
 
 Alternative local setup (recommended):

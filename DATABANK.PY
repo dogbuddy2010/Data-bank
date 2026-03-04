@@ -59,6 +59,7 @@ MAX_LOCKOUT_SECONDS = 300
 AI_ASSISTANT_API_KEY_ENV = "DATABANK_AI_API_KEY"
 AI_ASSISTANT_API_URL_ENV = "DATABANK_AI_API_URL"
 AI_ASSISTANT_MODEL_ENV = "DATABANK_AI_MODEL"
+AI_ASSISTANT_API_KEY_ALIASES = ("OPENAI_API_KEY", "OPENAI_KEY", "OPENAI_APIKEY")
 DEFAULT_AI_ASSISTANT_API_URL = "https://api.openai.com/v1/responses"
 DEFAULT_AI_ASSISTANT_MODEL = "gpt-4.1-mini"
 AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS = 12
@@ -139,7 +140,7 @@ def load_local_dotenv() -> None:
             if len(env_value) >= 2 and env_value[0] == env_value[-1] and env_value[0] in {'"', "'"}:
                 env_value = env_value[1:-1]
 
-            if env_key in {"OPENAI_API_KEY", "OPENAI_KEY", "OPENAI_APIKEY"}:
+            if env_key in AI_ASSISTANT_API_KEY_ALIASES:
                 normalized_key = normalize_external_api_key(env_value)
                 if normalized_key:
                     os.environ[AI_ASSISTANT_API_KEY_ENV] = normalized_key
@@ -884,6 +885,40 @@ def load_local_ai_settings_file() -> None:
         os.environ[AI_ASSISTANT_MODEL_ENV] = model
     if api_url and not os.environ.get(AI_ASSISTANT_API_URL_ENV, "").strip():
         os.environ[AI_ASSISTANT_API_URL_ENV] = api_url
+
+
+def normalize_assistant_endpoint(value: object) -> str:
+    candidate = str(value).strip()
+    if not candidate:
+        return DEFAULT_AI_ASSISTANT_API_URL
+    if not candidate.lower().startswith("https://"):
+        return DEFAULT_AI_ASSISTANT_API_URL
+    return candidate
+
+
+def assistant_runtime_config() -> tuple[str, str, str]:
+    load_local_dotenv()
+    load_local_ai_settings_file()
+
+    api_key = normalize_external_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
+    if not api_key:
+        for alias in AI_ASSISTANT_API_KEY_ALIASES:
+            alias_value = normalize_external_api_key(os.environ.get(alias, ""))
+            if alias_value:
+                api_key = alias_value
+                os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+                break
+
+    model = str(os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL)).strip()
+    if not model:
+        model = DEFAULT_AI_ASSISTANT_MODEL
+
+    endpoint = normalize_assistant_endpoint(
+        os.environ.get(AI_ASSISTANT_API_URL_ENV, DEFAULT_AI_ASSISTANT_API_URL)
+    )
+    os.environ[AI_ASSISTANT_API_URL_ENV] = endpoint
+
+    return api_key, model, endpoint
 
 
 def save_local_ai_settings_file(api_key: str) -> bool:
@@ -2799,7 +2834,7 @@ def generate_external_ai_help_response(
 
     LAST_EXTERNAL_AI_ERROR = ""
     LAST_EXTERNAL_AI_USED = False
-    api_key = normalize_external_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
+    api_key, model, endpoint = assistant_runtime_config()
     if not api_key:
         LAST_EXTERNAL_AI_ERROR = "missing API key"
         return None
@@ -2820,14 +2855,6 @@ def generate_external_ai_help_response(
         credentials.get("security_ai_learning_enabled", DEFAULT_SECURITY_AI_LEARNING_ENABLED),
         DEFAULT_SECURITY_AI_LEARNING_ENABLED,
     )
-
-    model = os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL).strip()
-    if not model:
-        model = DEFAULT_AI_ASSISTANT_MODEL
-
-    endpoint = os.environ.get(AI_ASSISTANT_API_URL_ENV, DEFAULT_AI_ASSISTANT_API_URL).strip()
-    if not endpoint:
-        endpoint = DEFAULT_AI_ASSISTANT_API_URL
 
     system_context = (
         "You are the Data-bank Support Assistant for a CLI app. "
@@ -2867,7 +2894,21 @@ def generate_external_ai_help_response(
         with urlopen(request, timeout=AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS) as response:
             response_body = response.read().decode("utf-8")
     except HTTPError as error:
-        LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}"
+        detail = ""
+        try:
+            error_body = error.read().decode("utf-8")
+            parsed_error = json.loads(error_body)
+            if isinstance(parsed_error, dict):
+                payload = parsed_error.get("error")
+                if isinstance(payload, dict):
+                    detail = str(payload.get("message", "")).strip()
+        except (OSError, ValueError, json.JSONDecodeError):
+            detail = ""
+
+        if detail:
+            LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}: {detail}"
+        else:
+            LAST_EXTERNAL_AI_ERROR = f"HTTP {error.code}"
         return None
     except URLError as error:
         LAST_EXTERNAL_AI_ERROR = f"network error: {error.reason}"
@@ -2976,7 +3017,8 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
     print("\nSupport Assistant")
     print("Ask simple Data-bank usage and security questions.")
-    api_key_loaded = bool(os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip())
+    api_key, _model, _endpoint = assistant_runtime_config()
+    api_key_loaded = bool(api_key)
     if not api_key_loaded:
         entered_api_key = prompt_password_masked(
             "API key not loaded. Paste OpenAI key now (or press Enter to skip): "
