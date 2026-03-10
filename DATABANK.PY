@@ -132,6 +132,44 @@ def normalize_configured_api_key(value: object) -> str:
     return ""
 
 
+def extract_api_key_from_text(content: str) -> str:
+    parsed = normalize_configured_api_key(content)
+    if parsed:
+        return parsed
+
+    for raw_line in content.splitlines():
+        line = raw_line.strip().lstrip("\ufeff")
+        if not line or line.startswith("#"):
+            continue
+        if line.lower().startswith("export "):
+            line = line[7:].strip()
+
+        if "=" in line:
+            key, value = line.split("=", 1)
+            key_name = key.strip().lstrip("\ufeff")
+            if key_name in {AI_ASSISTANT_API_KEY_ENV, *AI_ASSISTANT_API_KEY_ALIASES}:
+                candidate = normalize_configured_api_key(value.strip().strip('"').strip("'"))
+                if candidate:
+                    return candidate
+        else:
+            candidate = normalize_configured_api_key(line)
+            if candidate:
+                return candidate
+
+    return ""
+
+
+def load_api_key_from_file(file_path: Path) -> str:
+    try:
+        if not file_path.exists() or not file_path.is_file():
+            return ""
+        content = file_path.read_text(encoding="utf-8")
+    except OSError:
+        return ""
+
+    return extract_api_key_from_text(content)
+
+
 def candidate_dotenv_paths() -> list[Path]:
     candidates: list[Path] = []
 
@@ -981,14 +1019,14 @@ def discover_local_api_key() -> str:
             continue
         checked.add(resolved)
 
+        discovered = load_api_key_from_file(candidate)
+        if discovered:
+            return discovered
+
         try:
             content = candidate.read_text(encoding="utf-8")
         except OSError:
             continue
-
-        discovered = normalize_external_api_key(content)
-        if discovered:
-            return discovered
 
         try:
             parsed = json.loads(content)
@@ -1031,27 +1069,12 @@ def assistant_runtime_config() -> tuple[str, str, str]:
                 LAST_ASSISTANT_CONFIG_SOURCE = f"env-alias:{alias}"
                 break
 
-    if not api_key and PRIMARY_DOTENV_FILE.exists() and PRIMARY_DOTENV_FILE.is_file():
-        try:
-            content = PRIMARY_DOTENV_FILE.read_text(encoding="utf-8")
-        except OSError:
-            content = ""
-        if content:
-            for raw_line in content.splitlines():
-                line = raw_line.strip()
-                if not line or line.startswith("#") or "=" not in line:
-                    continue
-                if line.lower().startswith("export "):
-                    line = line[7:].strip()
-                key, value = line.split("=", 1)
-                if key.strip() != AI_ASSISTANT_API_KEY_ENV:
-                    continue
-                direct_key = normalize_configured_api_key(value.strip().strip('"').strip("'"))
-                if direct_key:
-                    api_key = direct_key
-                    os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
-                    LAST_ASSISTANT_CONFIG_SOURCE = f"hardwired:{PRIMARY_DOTENV_FILE}"
-                break
+    if not api_key:
+        direct_key = load_api_key_from_file(PRIMARY_DOTENV_FILE)
+        if direct_key:
+            api_key = direct_key
+            os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+            LAST_ASSISTANT_CONFIG_SOURCE = f"hardwired:{PRIMARY_DOTENV_FILE}"
 
     if not api_key:
         discovered = discover_local_api_key()
@@ -3170,6 +3193,12 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
     print("\nSupport Assistant")
     print("Ask simple Data-bank usage and security questions.")
     api_key, _model, _endpoint = assistant_runtime_config()
+    if not api_key:
+        # Fail-safe retry for intermittent env loading edge cases.
+        recovered = load_api_key_from_file(PRIMARY_DOTENV_FILE)
+        if recovered:
+            os.environ[AI_ASSISTANT_API_KEY_ENV] = recovered
+            api_key, _model, _endpoint = assistant_runtime_config()
     api_key_loaded = bool(api_key)
     if not api_key_loaded and AI_ASSISTANT_ALLOW_RUNTIME_KEY_PROMPT:
         entered_api_key = prompt_password_masked(
