@@ -123,6 +123,18 @@ def candidate_dotenv_paths() -> list[Path]:
         except OSError:
             pass
 
+    argv0 = sys.argv[0] if sys.argv else ""
+    if isinstance(argv0, str) and argv0.strip():
+        try:
+            argv_path = Path(argv0)
+            if argv_path.is_file():
+                argv_dir = argv_path.resolve().parent
+                add_path(argv_dir)
+                for parent in argv_dir.parents:
+                    add_path(parent)
+        except OSError:
+            pass
+
     return candidates
 
 

@@ -6,7 +6,7 @@ from pathlib import Path
 
 
 def main() -> int:
-    app_path = Path(__file__).with_name("DATABANK.PY")
+    app_path = Path(__file__).resolve().with_name("DATABANK.PY")
 
     try:
         py_compile.compile(str(app_path), doraise=True)
