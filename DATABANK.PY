@@ -3249,9 +3249,8 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
 def main() -> None:
     if not sys.stdin.isatty():
-        print("Data-bank requires an interactive terminal for login and menu input.")
-        print("Run it from a terminal with: python3 run_databank.py")
-        return
+        print("Warning: non-interactive input mode detected.")
+        print("If prompts do not accept input, run from an interactive terminal.")
 
     load_local_dotenv()
     load_local_ai_settings_file()
