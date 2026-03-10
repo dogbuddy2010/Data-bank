@@ -64,6 +64,7 @@ DEFAULT_AI_ASSISTANT_API_URL = "https://api.openai.com/v1/responses"
 DEFAULT_AI_ASSISTANT_MODEL = "gpt-4.1-mini"
 AI_ASSISTANT_REQUEST_TIMEOUT_SECONDS = 12
 AI_ASSISTANT_MAX_QUESTION_CHARS = 600
+AI_ASSISTANT_ALLOW_RUNTIME_KEY_PROMPT = False
 
 
 SESSION_PASSWORD: Optional[str] = None
@@ -2839,7 +2840,8 @@ def ai_help_response(question: str, credentials: dict[str, object]) -> str:
     reason = LAST_EXTERNAL_AI_ERROR.strip() or "external API unavailable"
     return (
         "Support Assistant requires external AI right now, but the request failed "
-        f"({reason}). Check API key/network and try again."
+        f"({reason}). Check preconfigured API key/network and try again. "
+        "Expected key source: DATABANK_AI_API_KEY in .env or ai_settings.json."
     )
 
 
@@ -3067,7 +3069,7 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
     print("Ask simple Data-bank usage and security questions.")
     api_key, _model, _endpoint = assistant_runtime_config()
     api_key_loaded = bool(api_key)
-    if not api_key_loaded:
+    if not api_key_loaded and AI_ASSISTANT_ALLOW_RUNTIME_KEY_PROMPT:
         entered_api_key = prompt_password_masked(
             "API key not loaded. Paste OpenAI key now (or press Enter to skip): "
         )
@@ -3084,6 +3086,13 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
                         print("Could not save API settings file.")
             else:
                 print("API key format was not recognized. Please paste only the key value.")
+
+    if not api_key_loaded:
+        print(
+            "API key was not found in preconfigured sources. "
+            "Expected: DATABANK_AI_API_KEY in .env or ai_settings.json."
+        )
+        print("Runtime key entry is disabled for this build.")
 
     print("Mode: External AI API")
     print(f"API key loaded: {'yes' if api_key_loaded else 'no'}")
