@@ -70,6 +70,7 @@ AI_ASSISTANT_ALLOW_RUNTIME_KEY_PROMPT = False
 SESSION_PASSWORD: Optional[str] = None
 LAST_EXTERNAL_AI_ERROR = ""
 LAST_EXTERNAL_AI_USED = False
+LAST_ASSISTANT_CONFIG_SOURCE = ""
 
 
 def normalize_external_api_key(value: object) -> str:
@@ -96,15 +97,38 @@ def normalize_external_api_key(value: object) -> str:
     return ""
 
 
-def load_local_dotenv() -> None:
-    candidate_paths = [Path.cwd() / ".env"]
+def candidate_dotenv_paths() -> list[Path]:
+    candidates: list[Path] = []
+
+    def add_path(base: Path) -> None:
+        target = (base / ".env").resolve()
+        if target not in candidates:
+            candidates.append(target)
+
+    try:
+        cwd = Path.cwd().resolve()
+        add_path(cwd)
+        for parent in cwd.parents:
+            add_path(parent)
+    except OSError:
+        pass
 
     main_file = globals().get("__file__")
-    if isinstance(main_file, str):
-        candidate_paths.append(Path(main_file).resolve().parent / ".env")
+    if isinstance(main_file, str) and main_file.strip():
+        try:
+            script_dir = Path(main_file).resolve().parent
+            add_path(script_dir)
+            for parent in script_dir.parents:
+                add_path(parent)
+        except OSError:
+            pass
 
+    return candidates
+
+
+def load_local_dotenv() -> None:
     loaded_files: set[Path] = set()
-    for dotenv_path in candidate_paths:
+    for dotenv_path in candidate_dotenv_paths():
         resolved = dotenv_path.resolve()
         if resolved in loaded_files or not resolved.exists() or not resolved.is_file():
             continue
@@ -889,12 +913,7 @@ def load_local_ai_settings_file() -> None:
 
 
 def discover_local_api_key() -> str:
-    candidate_files: list[Path] = [Path.cwd() / ".env"]
-
-    main_file = globals().get("__file__")
-    if isinstance(main_file, str):
-        candidate_files.append(Path(main_file).resolve().parent / ".env")
-
+    candidate_files: list[Path] = candidate_dotenv_paths()
     candidate_files.append(AI_SETTINGS_FILE)
 
     checked: set[Path] = set()
@@ -940,16 +959,22 @@ def normalize_assistant_endpoint(value: object) -> str:
 
 
 def assistant_runtime_config() -> tuple[str, str, str]:
+    global LAST_ASSISTANT_CONFIG_SOURCE
+
+    LAST_ASSISTANT_CONFIG_SOURCE = ""
     load_local_dotenv()
     load_local_ai_settings_file()
 
     api_key = normalize_external_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
+    if api_key:
+        LAST_ASSISTANT_CONFIG_SOURCE = f"env:{AI_ASSISTANT_API_KEY_ENV}"
     if not api_key:
         for alias in AI_ASSISTANT_API_KEY_ALIASES:
             alias_value = normalize_external_api_key(os.environ.get(alias, ""))
             if alias_value:
                 api_key = alias_value
                 os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+                LAST_ASSISTANT_CONFIG_SOURCE = f"env-alias:{alias}"
                 break
 
     if not api_key:
@@ -957,6 +982,7 @@ def assistant_runtime_config() -> tuple[str, str, str]:
         if discovered:
             api_key = discovered
             os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+            LAST_ASSISTANT_CONFIG_SOURCE = "file-discovery"
 
     model = str(os.environ.get(AI_ASSISTANT_MODEL_ENV, DEFAULT_AI_ASSISTANT_MODEL)).strip()
     if not model:
@@ -3096,6 +3122,8 @@ def ai_help_chat(credentials: dict[str, object]) -> None:
 
     print("Mode: External AI API")
     print(f"API key loaded: {'yes' if api_key_loaded else 'no'}")
+    if api_key_loaded:
+        print(f"API config source: {LAST_ASSISTANT_CONFIG_SOURCE or 'unknown'}")
     print("Type 'back' (or 'exit', 'quit', 'stop', 'bye') to return to the main menu.")
 
     while True:
