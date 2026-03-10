@@ -73,6 +73,26 @@ LAST_EXTERNAL_AI_USED = False
 LAST_ASSISTANT_CONFIG_SOURCE = ""
 
 
+def project_root_dir() -> Path:
+    main_file = globals().get("__file__")
+    if isinstance(main_file, str) and main_file.strip():
+        try:
+            return Path(main_file).resolve().parent
+        except OSError:
+            pass
+    try:
+        argv0 = Path(sys.argv[0]) if sys.argv else Path.cwd()
+        if argv0.is_file():
+            return argv0.resolve().parent
+    except OSError:
+        pass
+    return Path.cwd().resolve()
+
+
+PROJECT_ROOT_DIR = project_root_dir()
+PRIMARY_DOTENV_FILE = PROJECT_ROOT_DIR / ".env"
+
+
 def normalize_external_api_key(value: object) -> str:
     text = str(value).strip()
     if not text:
@@ -97,6 +117,21 @@ def normalize_external_api_key(value: object) -> str:
     return ""
 
 
+def normalize_configured_api_key(value: object) -> str:
+    token = str(value).strip()
+    if not token:
+        return ""
+
+    normalized = normalize_external_api_key(token)
+    if normalized:
+        return normalized
+
+    # Fallback for future provider key formats: accept a long, single-token value.
+    if len(token) >= 20 and not re.search(r"\s", token):
+        return token
+    return ""
+
+
 def candidate_dotenv_paths() -> list[Path]:
     candidates: list[Path] = []
 
@@ -104,6 +139,13 @@ def candidate_dotenv_paths() -> list[Path]:
         target = (base / ".env").resolve()
         if target not in candidates:
             candidates.append(target)
+
+    # Always check the project .env first.
+    try:
+        primary = PRIMARY_DOTENV_FILE.resolve()
+        candidates.append(primary)
+    except OSError:
+        pass
 
     try:
         cwd = Path.cwd().resolve()
@@ -184,7 +226,7 @@ def load_local_dotenv() -> None:
                 continue
 
             if env_key == AI_ASSISTANT_API_KEY_ENV:
-                normalized_key = normalize_external_api_key(env_value)
+                normalized_key = normalize_configured_api_key(env_value)
                 if not normalized_key:
                     continue
                 env_value = normalized_key
@@ -977,16 +1019,38 @@ def assistant_runtime_config() -> tuple[str, str, str]:
     load_local_dotenv()
     load_local_ai_settings_file()
 
-    api_key = normalize_external_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
+    api_key = normalize_configured_api_key(os.environ.get(AI_ASSISTANT_API_KEY_ENV, ""))
     if api_key:
         LAST_ASSISTANT_CONFIG_SOURCE = f"env:{AI_ASSISTANT_API_KEY_ENV}"
     if not api_key:
         for alias in AI_ASSISTANT_API_KEY_ALIASES:
-            alias_value = normalize_external_api_key(os.environ.get(alias, ""))
+            alias_value = normalize_configured_api_key(os.environ.get(alias, ""))
             if alias_value:
                 api_key = alias_value
                 os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
                 LAST_ASSISTANT_CONFIG_SOURCE = f"env-alias:{alias}"
+                break
+
+    if not api_key and PRIMARY_DOTENV_FILE.exists() and PRIMARY_DOTENV_FILE.is_file():
+        try:
+            content = PRIMARY_DOTENV_FILE.read_text(encoding="utf-8")
+        except OSError:
+            content = ""
+        if content:
+            for raw_line in content.splitlines():
+                line = raw_line.strip()
+                if not line or line.startswith("#") or "=" not in line:
+                    continue
+                if line.lower().startswith("export "):
+                    line = line[7:].strip()
+                key, value = line.split("=", 1)
+                if key.strip() != AI_ASSISTANT_API_KEY_ENV:
+                    continue
+                direct_key = normalize_configured_api_key(value.strip().strip('"').strip("'"))
+                if direct_key:
+                    api_key = direct_key
+                    os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+                    LAST_ASSISTANT_CONFIG_SOURCE = f"hardwired:{PRIMARY_DOTENV_FILE}"
                 break
 
     if not api_key:
