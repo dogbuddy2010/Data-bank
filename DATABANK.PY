@@ -287,8 +287,35 @@ def is_writable_directory(directory: Path) -> bool:
 
 
 def resolve_storage_dir() -> Path:
-    home_storage_dir = (Path.home() / ".data_bank").resolve()
+    project_storage_dir = (PROJECT_ROOT_DIR / ".data_bank").resolve()
+    if is_writable_directory(project_storage_dir):
+        legacy_home_storage_dir = (Path.home() / ".data_bank").resolve()
+        if legacy_home_storage_dir != project_storage_dir and legacy_home_storage_dir.exists():
+            try:
+                has_project_data = any(project_storage_dir.iterdir())
+            except OSError:
+                has_project_data = True
 
+            if not has_project_data:
+                # One-time best-effort migration from legacy home storage.
+                for file_name in (
+                    "vault_data.json",
+                    "vault_config.json",
+                    "security_events.jsonl",
+                    "ai_settings.json",
+                    ".env",
+                    "company_ai_config.json",
+                ):
+                    source = legacy_home_storage_dir / file_name
+                    target = project_storage_dir / file_name
+                    try:
+                        if source.exists() and source.is_file() and not target.exists():
+                            shutil.copy2(source, target)
+                    except OSError:
+                        pass
+        return project_storage_dir
+
+    home_storage_dir = (Path.home() / ".data_bank").resolve()
     if is_writable_directory(home_storage_dir):
         return home_storage_dir
 

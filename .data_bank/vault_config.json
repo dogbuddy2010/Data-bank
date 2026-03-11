@@ -1,0 +1,40 @@
+{
+  "username": "cd /workspaces/Data-bank && ps -ef | grep '[r]un_databank.py' || true",
+  "password_hash": "pbkdf2_sha256$200000$79198318c5fcbe334e87b82825abdbb0$445ded8b0f5b12731bf88ed3b02106da96f16f2e59554c80f6c802bc52d94301",
+  "vault_salt": "35673264c85c2888762f964a8039dbba",
+  "max_login_attempts": 3,
+  "lockout_seconds": 30,
+  "two_step_enabled": false,
+  "two_step_method": "custom_code",
+  "security_ai_sensitivity": "high",
+  "security_ai_learning_enabled": true,
+  "ai_learning_state": {
+    "failed_login_ewma": 0.0,
+    "vault_access_ewma": 0.0,
+    "unique_key_ewma": 0.0,
+    "sample_count": 1.0
+  },
+  "ai_help_learning_state": {
+    "total_questions": 0.0,
+    "last_question_at": 0.0,
+    "topic_two_step": 0.0,
+    "topic_backup": 0.0,
+    "topic_integrity": 0.0,
+    "topic_security_ai": 0.0,
+    "topic_cleanup": 0.0,
+    "topic_credentials": 0.0,
+    "topic_vault_ops": 0.0,
+    "topic_general": 0.0,
+    "last_topic": ""
+  },
+  "ai_help_chat_state": {
+    "pending_question_type": "",
+    "pending_question_text": "",
+    "pending_set_at": 0.0
+  },
+  "vault_integrity_hash": "",
+  "vault_integrity_last_verified": 0,
+  "two_step_secret_encrypted": "",
+  "two_step_custom_hash": "",
+  "backup_code_hashes": []
+}
