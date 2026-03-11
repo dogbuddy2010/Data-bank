@@ -41,6 +41,14 @@ From the project folder:
 python3 run_databank.py
 ```
 
+Windows options:
+
+```powershell
+py -3 run_databank.py
+```
+
+Or double-click `run_databank_windows.bat` to launch without terminal commands.
+
 ### Optional: External AI API for Support Assistant
 The assistant works offline by default. To enable API-backed responses, set environment variables before running:
 
@@ -76,12 +84,13 @@ This launcher runs a syntax check on `DATABANK.PY` before starting the app.
 
 ## First Launch Behavior
 On first run, Data-bank shows a setup message and creates its login/security config file in the storage folder:
-- `~/.data_bank/vault_config.json` (or fallback writable folder if home is not writable)
+- `./.data_bank/vault_config.json` (inside the project folder when writable)
+- fallback: `~/.data_bank/vault_config.json` only if project-local storage is not writable
 
 First launch includes a required guided account setup where you must create a custom username/password before login.
 
 The vault data file:
-- `~/.data_bank/vault_data.json`
+- `./.data_bank/vault_data.json` (or fallback to `~/.data_bank/vault_data.json`)
 
 is created automatically after your first saved vault entry.
 
@@ -92,7 +101,7 @@ To verify storage path and file write access:
 python3 health_check.py
 ```
 
-The app stores data in your home folder under `.data_bank`.
+The app stores data in `.data_bank` under the project folder by default.
 
 Safe cleanup option:
 - Menu option 8 removes only Data-bank-created files (`vault_data.json` and `vault_config.json`) from the Data-bank storage folder.
@@ -101,7 +110,7 @@ Safe cleanup option:
 
 Default credentials are deprecated and blocked from login.
 
-After first run, login credentials are saved in `.data_bank/vault_config.json` and can be changed in-app. If you change them, use the updated values.
+After first run, login credentials are saved in `.data_bank/vault_config.json` in the active project folder (with home-folder fallback only when needed) and can be changed in-app. If you change them, use the updated values.
 
 Note: `vault_config.json` now stores `password_hash` instead of `password` for security. Older plaintext configs are migrated automatically on next successful load.
 
