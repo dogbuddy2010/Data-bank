@@ -215,6 +215,13 @@ def candidate_dotenv_paths() -> list[Path]:
         except OSError:
             pass
 
+    try:
+        storage_dotenv = STORAGE_DOTENV_FILE.resolve()
+        if storage_dotenv not in candidates:
+            candidates.append(storage_dotenv)
+    except OSError:
+        pass
+
     return candidates
 
 
@@ -340,6 +347,8 @@ DATA_FILE = STORAGE_DIR / "vault_data.json"
 CONFIG_FILE = STORAGE_DIR / "vault_config.json"
 SECURITY_LOG_FILE = STORAGE_DIR / "security_events.jsonl"
 AI_SETTINGS_FILE = STORAGE_DIR / "ai_settings.json"
+LEGACY_AI_SETTINGS_FILE = STORAGE_DIR / "company_ai_config.json"
+STORAGE_DOTENV_FILE = STORAGE_DIR / ".env"
 
 SECURITY_RULE_WINDOW_SECONDS = 300
 SECURITY_AI_PROFILES: dict[str, dict[str, int]] = {
@@ -1011,32 +1020,82 @@ def load_security_events(max_events: int = 500) -> list[dict[str, object]]:
 
 
 def load_local_ai_settings_file() -> None:
-    if not AI_SETTINGS_FILE.exists() or not AI_SETTINGS_FILE.is_file():
-        return
+    candidate_files = [
+        AI_SETTINGS_FILE,
+        LEGACY_AI_SETTINGS_FILE,
+        PROJECT_ROOT_DIR / "ai_settings.json",
+        PROJECT_ROOT_DIR / "company_ai_config.json",
+    ]
 
-    try:
-        parsed = json.loads(AI_SETTINGS_FILE.read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return
+    for settings_file in candidate_files:
+        if not settings_file.exists() or not settings_file.is_file():
+            continue
 
-    if not isinstance(parsed, dict):
-        return
+        try:
+            parsed = json.loads(settings_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
 
-    api_key = normalize_external_api_key(parsed.get("api_key", ""))
-    model = str(parsed.get("model", "")).strip()
-    api_url = str(parsed.get("api_url", "")).strip()
+        if not isinstance(parsed, dict):
+            continue
 
-    if api_key and not os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip():
-        os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
-    if model and not os.environ.get(AI_ASSISTANT_MODEL_ENV, "").strip():
-        os.environ[AI_ASSISTANT_MODEL_ENV] = model
-    if api_url and not os.environ.get(AI_ASSISTANT_API_URL_ENV, "").strip():
-        os.environ[AI_ASSISTANT_API_URL_ENV] = api_url
+        api_key_fields = (
+            "api_key",
+            "openai_api_key",
+            AI_ASSISTANT_API_KEY_ENV,
+            "OPENAI_API_KEY",
+        )
+        model_fields = (
+            "model",
+            "ai_model",
+            AI_ASSISTANT_MODEL_ENV,
+        )
+        api_url_fields = (
+            "api_url",
+            "endpoint",
+            "base_url",
+            AI_ASSISTANT_API_URL_ENV,
+        )
+
+        api_key = ""
+        for field in api_key_fields:
+            api_key = normalize_configured_api_key(parsed.get(field, ""))
+            if api_key:
+                break
+
+        model = ""
+        for field in model_fields:
+            candidate = str(parsed.get(field, "")).strip()
+            if candidate:
+                model = candidate
+                break
+
+        api_url = ""
+        for field in api_url_fields:
+            candidate = str(parsed.get(field, "")).strip()
+            if candidate:
+                api_url = candidate
+                break
+
+        if api_key and not os.environ.get(AI_ASSISTANT_API_KEY_ENV, "").strip():
+            os.environ[AI_ASSISTANT_API_KEY_ENV] = api_key
+        if model and not os.environ.get(AI_ASSISTANT_MODEL_ENV, "").strip():
+            os.environ[AI_ASSISTANT_MODEL_ENV] = model
+        if api_url and not os.environ.get(AI_ASSISTANT_API_URL_ENV, "").strip():
+            os.environ[AI_ASSISTANT_API_URL_ENV] = api_url
 
 
 def discover_local_api_key() -> str:
     candidate_files: list[Path] = candidate_dotenv_paths()
-    candidate_files.append(AI_SETTINGS_FILE)
+    candidate_files.extend(
+        [
+            STORAGE_DOTENV_FILE,
+            AI_SETTINGS_FILE,
+            LEGACY_AI_SETTINGS_FILE,
+            PROJECT_ROOT_DIR / "ai_settings.json",
+            PROJECT_ROOT_DIR / "company_ai_config.json",
+        ]
+    )
 
     checked: set[Path] = set()
     for candidate in candidate_files:
