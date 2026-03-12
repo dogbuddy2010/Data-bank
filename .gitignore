@@ -7,10 +7,3 @@ __pycache__/
 
 # Local secrets
 .env
-
-# Runtime app storage (generated locally)
-.data_bank/
-vault_config.json
-vault_data.json
-security_events.jsonl
-ai_settings.json
